@@ -17,12 +17,14 @@ import time
 import math
 import random
 
+from class_renaming import class_mapping
+
 # ----------------------------------------------------------------------------#
 
-EPOCHS = 100
+EPOCHS = 500
 BATCH_SIZE = 32
 AUGMENTATIONS = 2
-ADD_AUGMENTATIONS = True
+ADD_AUGMENTATIONS = False
 
 # ----------------------------------------------------------------------------#
 
@@ -97,6 +99,11 @@ class GreekLetterDataset(Dataset):
         self.classes = sorted(list(set([img[1] for img in self.images]))) 
         self.class_to_idx = {cls_name: i for i, cls_name in enumerate(self.classes)}
         
+        original_classes = sorted(list(set([img[1] for img in self.images])))
+        self.classes = [class_mapping.get(cls, cls) for cls in original_classes]
+        self.class_to_idx = {class_mapping.get(cls, cls): i for i, cls in enumerate(original_classes)}
+        self.original_to_idx = {cls: i for i, cls in enumerate(original_classes)}
+        
     def _load_images(self):
         images = []
         character_types = ['CAPS', 'SMALL']
@@ -152,13 +159,12 @@ class GreekLetterDataset(Dataset):
     
     def __getitem__(self, idx):
         img_path, label = self.images[idx]
-        image = Image.open(img_path).convert('L') # Grayscale conversion.
+        image = Image.open(img_path).convert('L')
         
         if self.transform:
             image = self.transform(image)
             
-        label_idx = self.class_to_idx[label] # Label to index conversion.
-        
+        label_idx = self.original_to_idx[label]        
         return image, label_idx
     
 # ----------------------------------------------------------------------------#
@@ -446,7 +452,7 @@ def train_model():
         if test_acc > best_acc:
             best_acc = test_acc
             patience_counter = 0
-            torch.save(model.state_dict(), "ocr_model.pth")
+            #torch.save(model.state_dict(), "ocr_model.pth")
         else:
             patience_counter += 1
             if patience_counter >= patience:
