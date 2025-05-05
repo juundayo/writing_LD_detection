@@ -17,7 +17,7 @@ EPOCHS = 1
 BATCH_SIZE = 32
 
 # ----------------------------------------------------------------------------#
-
+''' Loading data through the data_loading.py file.'''
 # Image transform.
 data_transforms = transforms.Compose([
     transforms.Resize((32, 32)),
