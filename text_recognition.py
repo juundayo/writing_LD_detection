@@ -34,10 +34,12 @@ class GreekTextRecognizer:
     def detect_characters(self, image):
         """Simple character detection using contour finding."""
         # Thresholding the image.
-        _, thresh = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        _, thresh = cv2.threshold(image, 0, 255, 
+                                  cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         
         # Finding contours.
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, 
+                                       cv2.CHAIN_APPROX_SIMPLE)
         
         # Sorting contours from left to right.
         contours = sorted(contours, key=lambda c: cv2.boundingRect(c)[0])
@@ -72,11 +74,18 @@ class GreekTextRecognizer:
         # Detecting characters.
         characters = self.detect_characters(image)
         
-        # Recognizing each character
+        '''
+        Recognizing each character and putting them into a list.
+        We first turn them into small letters using lower(), so as to
+        improve reading accuracy. For example, χ and Χ look quite similar
+        and there is a probability that the model predicts the wrong variant
+        of the letter.
+        '''
         recognized_text = []
         for x, y, w, h, roi in characters:
             char = self.recognize_character(roi)
-            recognized_text.append(char)
+            char.lower()
+            recognized_text.append(char)            
             
         # Combining characters into words/sentences.
         # For now, we'll test joining with space.
