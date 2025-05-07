@@ -301,7 +301,7 @@ def train_model():
         if test_acc > best_acc:
             best_acc = test_acc
             patience_counter = 0
-            #torch.save(model.state_dict(), "ocr_model.pth")
+            torch.save(model.state_dict(), "ocr_model.pth")
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -317,4 +317,5 @@ def train_model():
 model = train_model()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 test_acc = evaluate_model(model, test_loader, device)
+
 print(f"\nFinal Test Accuracy: {test_acc:.2f}%")
