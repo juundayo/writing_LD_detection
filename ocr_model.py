@@ -141,9 +141,9 @@ class LetterOCR(nn.Module):
         
         # Residual blocks.
         self.layer1 = self._make_layer(64, 64, 3)
-        self.layer2 = self._make_layer(64, 128, 4, stride=2)
-        self.layer3 = self._make_layer(128, 256, 6, stride=2)
-        self.layer4 = self._make_layer(256, 512, 3, stride=2)
+        self.layer2 = self._make_layer(64, 128, 4, stride=1)
+        self.layer3 = self._make_layer(128, 256, 6, stride=1)
+        self.layer4 = self._make_layer(256, 512, 3, stride=1)
         
         # Multi-scale feature fusion.
         self.conv2 = nn.Conv2d(512, 256, kernel_size=1)
