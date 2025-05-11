@@ -36,11 +36,11 @@ class GreekTextRecognizer:
 
     def line_grouping(self, characters):
         '''Groups characters into lines based on their y-coordinate.'''
-        sorted_chars = sorted(characters, key=lambda c: (c[1], c[0])):
+        sorted_chars = sorted(characters, key=lambda c: (c[1], c[0]))
 
         lines = []
         current_line = []
-        y_thershold = 10 
+        y_threshold = 10 
 
         for i, char in enumerate(sorted_chars):
             if not current_line:
