@@ -34,15 +34,15 @@ def dataAugmentation(image_path):
     """
     Augmentation function used to take each letter and create a new randomly
     augmented version of it through:
-        → Random rotation (-5 to 5 degrees).
-        → Random contrast (0.8 to 1.2).
+        → Random rotation (-6 to 6 degrees).
+        → Random contrast (1.0 to 1.5).
     """
     try:
         original_img = Image.open(image_path).convert('L')
         
         for i in range(AUGMENTATIONS):
-            ''' Random rotation (-5 to +5 degrees). '''
-            angle = random.uniform(-5, 5)
+            ''' Random rotation (-6 to +6 degrees). '''
+            angle = random.uniform(-6, 6)
             img_array = np.array(original_img)
             
             # Image center.
@@ -61,8 +61,8 @@ def dataAugmentation(image_path):
             # Converting back to PIL Image!
             rotated_img = Image.fromarray(rotated_array)
             
-            ''' Random contrast (0.8 to 1.2). '''
-            contrast_factor = random.uniform(0.8, 1.2)
+            ''' Random contrast (1.0 to 1.5). '''
+            contrast_factor = random.uniform(1, 1.5)
             contrast_enhancer = ImageEnhance.Contrast(rotated_img)
             contrast_img = contrast_enhancer.enhance(contrast_factor)
             
@@ -73,7 +73,6 @@ def dataAugmentation(image_path):
             
     except Exception as e:
         print(f"Error augmenting image {image_path}: {str(e)}")
-
 
 class GreekLetterDataset(Dataset):
     def __init__(self, root_dir, transform=None, augment=ADD_AUGMENTATIONS):
