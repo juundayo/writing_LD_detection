@@ -10,7 +10,7 @@ ORIGINAL_CLASSES = [
     'ρ_cap', 'ρ_small', 'ς_small', 'σ_cap', 'σ_small', 'στ_cap', 'στ_small', 'τ_cap',
     'τ_small', 'τζ_cap', 'τζ_small', 'τσ_cap', 'τσ_small', 'υ_cap', 'υ_small', 'υ_t',
     'υ_διαλ', 'υ_τον_διαλ', 'υι_cap', 'υι_small', 'φ_cap', 'φ_small', 'χ_cap', 'χ_small',
-    'ψ_cap', 'ψ_small', 'ω_cap', 'ω_small', 'ω_t'
+    'ψ_cap', 'ψ_small', 'ω_cap', 'ω_small', 'ω_t', 'space'
 ]
 
 class_mapping = {cls: cls for cls in ORIGINAL_CLASSES}
@@ -113,3 +113,6 @@ class_mapping['ει_t'] = 'εί'
 class_mapping['ευ_t'] = 'εύ'
 class_mapping['οι_t'] = 'οί'
 class_mapping['ου_t'] = 'ού'
+
+# Special characters.
+class_mapping['space'] = ' '
