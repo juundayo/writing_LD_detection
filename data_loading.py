@@ -82,19 +82,23 @@ class GreekLetterDataset(Dataset):
         self.train_dataset = None
         self.test_dataset = None
         self._load_images()
-        self.classes = sorted(list(set([img[1] for img in self.test_dataset]))) 
-        self.class_to_idx = {cls_name: i for i, cls_name in enumerate(self.classes)}
         
-        original_classes = sorted(list(set([img[1] for img in self.test_dataset])))
-        self.classes = [class_mapping.get(cls, cls) for cls in original_classes]
-        self.class_to_idx = {class_mapping.get(cls, cls): i for i, cls in enumerate(original_classes)}
-        self.original_to_idx = {cls: i for i, cls in enumerate(original_classes)}
+        # Getting all unique classes!
+        all_classes = sorted(list(set([img[1] for img in self.train_dataset + self.test_dataset])))
+        
+        self.classes = []
+        for cls in all_classes:
+            mapped_cls = class_mapping.get(cls, cls)
+            self.classes.append(mapped_cls)
+                
+        self.class_to_idx = {cls: i for i, cls in enumerate(self.classes)}
+        self.original_to_idx = {orig_cls: i for i, orig_cls in enumerate(all_classes)}
         
 
     def _iterate_through(self, dataset=None, ADD_AUGMENTATIONS=False):
         images = []
         character_types = ['SMALL', 'SPECIAL']
-        sub_folders = ['SingleCharacters', 'space']
+        sub_folders = ['SingleCharacters', 'Symbols']
 
         for char_type in character_types:
             char_type_dir = os.path.join(self.root_dir, char_type)
