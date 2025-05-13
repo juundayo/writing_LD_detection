@@ -11,6 +11,7 @@ from class_renaming import class_mapping
 # ----------------------------------------------------------------------------#
 
 AUGMENTATIONS = 3
+SPACE_AUGMENTATIONS = 20
 
 # ----------------------------------------------------------------------------#
 
@@ -30,7 +31,7 @@ File layout:
 
 # ----------------------------------------------------------------------------#
 
-def dataAugmentation(image_path):
+def dataAugmentation(image_path, aug_number):
     """
     Augmentation function used to take each letter and create a new randomly
     augmented version of it through:
@@ -40,7 +41,7 @@ def dataAugmentation(image_path):
     try:
         original_img = Image.open(image_path).convert('L')
         
-        for i in range(AUGMENTATIONS):
+        for i in range(aug_number):
             ''' Random rotation (-10 to +10 degrees). '''
             angle = random.uniform(-10, 10)
             img_array = np.array(original_img)
@@ -120,7 +121,13 @@ class GreekLetterDataset(Dataset):
                         
                     # Saving the letter as a class name.
                     class_name = letter_folder
-                    
+
+                    # Changing the amount of augmentations based on the class.
+                    if class_name == ' ':
+                        aug_number = SPACE_AUGMENTATIONS
+                    else:
+                        aug_number = AUGMENTATIONS
+
                     for img_name in os.listdir(letter_path):
                             
                         # Skipping to avoid duplicates!
@@ -130,7 +137,7 @@ class GreekLetterDataset(Dataset):
                         img_path = os.path.join(letter_path, img_name)
                         
                         if ADD_AUGMENTATIONS:
-                            dataAugmentation(img_path) 
+                            dataAugmentation(img_path, aug_number) 
 
                         images.append((img_path, class_name))
                     
