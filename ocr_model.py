@@ -13,8 +13,8 @@ import data_loading as dl
 
 # ----------------------------------------------------------------------------#
 
-EPOCHS = 1
-BATCH_SIZE = 32
+EPOCHS = 100
+BATCH_SIZE = 16
 
 # ----------------------------------------------------------------------------#
 ''' Loading data through the data_loading.py file.'''
@@ -26,11 +26,10 @@ data_transforms = transforms.Compose([
 ])
     
 # Loading the dataset and using an 80% train - 20% test split.
-full_dataset = dl.GreekLetterDataset(root_dir='Thesis/GreekLetters', 
+full_dataset = dl.GreekLetterDataset(root_dir='/home/ml3/Desktop/Thesis/.venv/Data/GreekLetters', 
                                   transform=data_transforms)
-train_dataset, test_dataset = train_test_split(full_dataset, test_size=0.2, 
-                                               random_state=1)
 
+train_dataset, test_dataset = full_dataset.get_datasets()
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
@@ -42,9 +41,9 @@ print(f"Found {len(full_dataset.classes)} classes: {full_dataset.classes}")
 Model creation for character recognition.
 
 The model is trained to recognise each letter separately. Each image that it 
-is trained on has lines between the letters which will later help with the 
-dysgraphia model. We use an attention mechanism to focus on the letters and the
-lines themselves, opposed to the white spaces between them.
+is trained on has letters between the lines which will later help with the 
+writing disorder model. We use an attention mechanism to focus on the letters 
+and the lines themselves, opposed to the white spaces between them.
 '''
 
 # ----------------------------------------------------------------------------#
@@ -84,7 +83,7 @@ class SpatialAttention(nn.Module):
         x = self.conv(x)
         return self.sigmoid(x)
 
-# CBAM.
+# Convolutional Block Attention Module
 class CBAM(nn.Module):
     def __init__(self, in_channels, reduction_ratio=8):
         super(CBAM, self).__init__()
@@ -133,17 +132,17 @@ class LetterOCR(nn.Module):
         super(LetterOCR, self).__init__()
         
         # Initial convolution block.
-        self.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, 
+        self.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=1, padding=3, 
                                bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=1, padding=1)
         
         # Residual blocks.
         self.layer1 = self._make_layer(64, 64, 3)
-        self.layer2 = self._make_layer(64, 128, 4, stride=1)
-        self.layer3 = self._make_layer(128, 256, 6, stride=1)
-        self.layer4 = self._make_layer(256, 512, 3, stride=1)
+        self.layer2 = self._make_layer(64, 128, 4, stride=2)
+        self.layer3 = self._make_layer(128, 256, 6, stride=2)
+        self.layer4 = self._make_layer(256, 512, 3, stride=2)
         
         # Multi-scale feature fusion.
         self.conv2 = nn.Conv2d(512, 256, kernel_size=1)
@@ -249,7 +248,7 @@ def train_model():
     
     # Early stopping!
     best_acc = 0.0
-    patience = 5
+    patience = 20
     patience_counter = 0
         
     pbar = tqdm(range(EPOCHS), desc="Training Progress", unit="epoch", 
@@ -316,6 +315,7 @@ def train_model():
 
 model = train_model()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(device)
 test_acc = evaluate_model(model, test_loader, device)
 
 print(f"\nFinal Test Accuracy: {test_acc:.2f}%")
