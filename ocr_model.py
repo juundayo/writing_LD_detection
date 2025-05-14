@@ -6,6 +6,8 @@ import torch.optim as optim
 from torchvision import transforms
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
+import numpy as np
 from tqdm import tqdm
 import time
 
@@ -15,25 +17,6 @@ import data_loading as dl
 
 EPOCHS = 100
 BATCH_SIZE = 16
-
-# ----------------------------------------------------------------------------#
-''' Loading data through the data_loading.py file.'''
-# Image transform.
-data_transforms = transforms.Compose([
-    transforms.Resize((32, 32)),
-    transforms.ToTensor(),
-    transforms.Normalize([0.5], [0.5])
-])
-    
-# Loading the dataset and using an 80% train - 20% test split.
-full_dataset = dl.GreekLetterDataset(root_dir='/home/ml3/Desktop/Thesis/.venv/Data/GreekLetters', 
-                                  transform=data_transforms)
-
-train_dataset, test_dataset = full_dataset.get_datasets()
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
-
-print(f"Found {len(full_dataset.classes)} classes: {full_dataset.classes}")
 
 # ----------------------------------------------------------------------------#
 
@@ -132,17 +115,16 @@ class LetterOCR(nn.Module):
         super(LetterOCR, self).__init__()
         
         # Initial convolution block.
-        self.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=1, padding=3, 
-                               bias=False)
+        self.conv1 = nn.Conv2d(1, 64, kernel_size=5, stride=1, padding=2)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=1, padding=1)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         
         # Residual blocks.
         self.layer1 = self._make_layer(64, 64, 3)
         self.layer2 = self._make_layer(64, 128, 4, stride=2)
-        self.layer3 = self._make_layer(128, 256, 6, stride=2)
-        self.layer4 = self._make_layer(256, 512, 3, stride=2)
+        self.layer3 = self._make_layer(128, 256, 4, stride=2)
+        self.layer4 = self._make_layer(256, 512, 2, stride=2)
         
         # Multi-scale feature fusion.
         self.conv2 = nn.Conv2d(512, 256, kernel_size=1)
@@ -313,9 +295,52 @@ def train_model():
 
 # ----------------------------------------------------------------------------#
 
-model = train_model()
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(device)
-test_acc = evaluate_model(model, test_loader, device)
+if __name__ == "__main__":
 
-print(f"\nFinal Test Accuracy: {test_acc:.2f}%")
+    ''' Loading data through the data_loading.py file.'''
+    # Image transform.
+    data_transforms = transforms.Compose([
+        transforms.Resize((45, 80)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [0.5])
+    ])
+        
+    # Loading the dataset and using an 80% train - 20% test split.
+    full_dataset = dl.GreekLetterDataset(root_dir='/home/ml3/Desktop/Thesis/.venv/Data/GreekLetters', 
+                                    transform=data_transforms)
+
+    train_dataset, test_dataset = full_dataset.get_datasets()
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+
+    print(f"Found {len(full_dataset.classes)} classes: {full_dataset.classes}")
+
+    model = train_model()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    test_acc = evaluate_model(model, test_loader, device)
+
+    print(f"\nFinal Test Accuracy: {test_acc:.2f}%")
+
+# ----------------------------------------------------------------------------#
+
+    '''Displaying data samples!'''
+    dataiter = iter(test_loader)
+    images, labels = next(dataiter)
+
+    fig = plt.figure(figsize=(12, 8))
+    for i in range(min(20, len(images))):
+        ax = fig.add_subplot(4, 5, i+1)
+        img = images[i]
+        label = full_dataset.classes[labels[i]]
+        
+        img = img * 0.5 + 0.5
+        npimg = img.numpy()
+        plt.imshow(npimg.squeeze(), cmap='gray')
+        ax.set_title(label)
+        ax.axis('off')
+
+    plt.suptitle("Input Images", y=1.02)
+    plt.tight_layout()
+    plt.show()
+
+# ----------------------------------------------------------------------------#
