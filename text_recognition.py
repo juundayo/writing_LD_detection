@@ -70,6 +70,11 @@ class GreekTextRecognizer:
         Using adaptive threshold for better performance.
         """
         image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+
+        # Adaptice histogram equalization for contrast.
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        image = clahe.apply(image)
+
         image = cv2.GaussianBlur(image, (3, 3), 0)
         image = cv2.adaptiveThreshold(
             image, 255, 
@@ -83,16 +88,26 @@ class GreekTextRecognizer:
         return image
     
     def preprocess_character(self, char_image):
+        # Creating a padded image.
         h, w = char_image.shape
-        size = max(h, w)
+        size = max(h, w) + 10
         padded = np.zeros((size, size), dtype=np.unit8)
+
         y_offset = (size - h) // 2
         x_offset = (size - w) // 2
         padded[y_offset:y_offset+h, x_offset+w] = char_image
 
         blurred = cv2.GaussianBlur(padded, (3, 3), 0)
-        _, thresholded = cv2.threshold(blurred, 0, 255, 
-                                       cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+        thresh = cv2.adaptiveThreshold(
+            blurred, 255, 
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY_INV, 11, 2
+        )
+
+        resized = cv2.resize(thresh, (80, 45),
+                              interpolatiion=cv2.INTER_AREA)
+        
+        return resized
 
     def line_grouping(self, characters):
         '''
@@ -118,7 +133,7 @@ class GreekTextRecognizer:
                 if abs(char[1] - current_line[0][1]) < y_threshold:
                     current_line.append(char)
                 else:
-                    # Sort characters in line by x-position
+                    # Sorting characters in line by x-position.
                     current_line.sort(key=lambda c: c[0])
                     lines.append(current_line)
                     current_line = [char]
@@ -163,8 +178,9 @@ class GreekTextRecognizer:
                     if current_word:
                         word = ''.join(current_word)
                         avg_conf = sum(current_confidences)/len(current_confidences)
+
                         marked_word = self.mark_unknown(word, avg_conf)
-                        current_line_words.append(self.mark_unknown(word))
+                        current_line_words.append(marked_word)
                         current_word = []
                         current_confidences = []
                 elif char == self.HYPHEN_CLASS:
@@ -178,6 +194,7 @@ class GreekTextRecognizer:
             # Adding the last word in the line if it exists.
             if current_word:
                 word = ''.join(current_word)
+                avg_conf = sum(current_confidences)/len(current_confidences) if current_confidences else 0
                 current_line_words.append(self.mark_unknown(word))
             
             # Handling hyphenated words from the previous line.
@@ -214,7 +231,7 @@ class GreekTextRecognizer:
     
     def mark_unknown(self, word, confidence=0):
         if (word.lower() not in self.greek_dictionary) or (confidence < 0.7):
-            return f"{word}"
+            return f"*{word}*"
         return word
 
     def recognize_text(self, image_path):
@@ -241,7 +258,7 @@ class GreekTextRecognizer:
             cv2.imshow("Recognition Progress", display_img)
             cv2.waitKey(0)
         
-        cv2.destroyAllWindows()
+            cv2.destroyAllWindows()
 
         lines = self.line_grouping(characters)
         result = self.reconstruct_text(lines)
@@ -269,23 +286,30 @@ class GreekTextRecognizer:
         A rectangle is drawn around each character found.
         """
         # Thresholding the image and finding contours.
-        thresh = cv2.adaptiveThreshold(
-            image, 255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV, 11, 2
+        contours, hierarchy = cv2.findContours(
+            image, 
+            cv2.RETR_EXTERNAL,  # Only external contours!
+            cv2.CHAIN_APPROX_SIMPLE
         )
-        contours, _ = cv2.findContours(thresh, cv2.RETR_LIST, 
-                                       cv2.CHAIN_APPROX_SIMPLE)
                 
         character_boxes = []
         for contour in contours:
             x, y, w, h = cv2.boundingRect(contour)
+
+            img_height, img_width = image.shape
+            min_dim = min(img_height, img_width)
             
             # Filtering out noise (very small contours).
-            if w > 20 and h > 20 and w*h > 30:
+            if (w > img_width * 0.01 and h > img_height * 0.02 and 
+                w < img_width * 0.3 and h < img_height * 0.3 and 
+                w*h > (min_dim * 0.03)**2):                
+                
                 # Extracting character ROI.
                 roi = image[y:y+h, x:x+w]
-                character_boxes.append((x, y, w, h, roi))
+
+                # Additional check for sufficient ink.
+                if np.mean(roi) > 10:  # At least some dark pixels
+                    character_boxes.append((x, y, w, h, roi))
                 
         return character_boxes
     
@@ -303,13 +327,12 @@ class GreekTextRecognizer:
         with torch.no_grad():
             outputs = self.model(char_tensor)
             probs = torch.nn.functional.softmax(outputs, dim=1)
-            conf, pred = torch.max(outputs, 1)
+            conf, pred = torch.max(probs, 1)
 
             char = self.idx_to_class[pred.item()]
             
             return char.lower(), conf.item()
         
-
 # ----------------------------------------------------------------------------#
 
 if __name__ == '__main__':
