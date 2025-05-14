@@ -14,18 +14,19 @@ from data_loading import class_mapping
 
 class GreekTextRecognizer:
     def __init__(self, model_path, device):
-        self.device = device  # Use the passed device parameter
+        self.device = device
         self.model = self.load_model(model_path, len(class_mapping))
         
         # Inverse mapping from index to class name.
-        self.idx_to_class = {v: k for k, v in class_mapping.items()}
+        self.classes = sorted(class_mapping.values())
+        self.idx_to_class = {i: cls for i, cls in enumerate(self.classes)}
 
         self.greek_dictionary = self.load_greek_dictionary(
             '/home/ml3/Desktop/Thesis/.venv/Data/filtered_dictionary.dic'
         ) 
         
         self.transform = transforms.Compose([
-            transforms.Resize((64, 64)),
+            transforms.Resize((45, 80)),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5])
         ])
@@ -39,6 +40,16 @@ class GreekTextRecognizer:
         model.to(self.device)
 
         return model
+    
+    def visualize_detections(self, image, characters):
+        """Displaying the input image with detected character bounding boxes."""
+        display_img = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        for (x, y, w, h, _) in characters:
+            cv2.rectangle(display_img, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        
+        cv2.imshow("Character Detections", display_img)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
     
     def load_greek_dictionary(self, dict_path):
         """Loading the Greek dictionary into a set for faster lookup."""
@@ -59,14 +70,29 @@ class GreekTextRecognizer:
         Using adaptive threshold for better performance.
         """
         image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-
+        image = cv2.GaussianBlur(image, (3, 3), 0)
         image = cv2.adaptiveThreshold(
             image, 255, 
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV, 11, 2
+            cv2.THRESH_BINARY_INV, 21, 10 # Previous: 11, 2.
         )
 
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        image = cv2.morphologyEx(image, cv2.MORPH_CLOSE, kernel)
+
         return image
+    
+    def preprocess_character(self, char_image):
+        h, w = char_image.shape
+        size = max(h, w)
+        padded = np.zeros((size, size), dtype=np.unit8)
+        y_offset = (size - h) // 2
+        x_offset = (size - w) // 2
+        padded[y_offset:y_offset+h, x_offset+w] = char_image
+
+        blurred = cv2.GaussianBlur(padded, (3, 3), 0)
+        _, thresholded = cv2.threshold(blurred, 0, 255, 
+                                       cv2.THRESH_BINARY+cv2.THRESH_OTSU)
 
     def line_grouping(self, characters):
         '''
@@ -187,7 +213,7 @@ class GreekTextRecognizer:
         }
     
     def mark_unknown(self, word, confidence=0):
-        if (word.lower() not in self.greek_dictionary) or (confidence < 0.6):
+        if (word.lower() not in self.greek_dictionary) or (confidence < 0.7):
             return f"{word}"
         return word
 
@@ -195,20 +221,45 @@ class GreekTextRecognizer:
         """Full pipeline for text recognition with line and word handling."""
         image = self.preprocess_image(image_path)
         characters = self.detect_characters(image)
+
+        self.visualize_detections(image, characters)
+    
+        # Visualizations for each character.
+        for i, (x, y, w, h, roi) in enumerate(characters):
+            cv2.imshow(f"Character {i}", roi)
+            cv2.waitKey(0)
+            
+            # Recognizing the character.
+            char, conf = self.recognize_character(roi)
+            print(f"Recognized: {char} (confidence: {conf:.2f})")
+            
+            # Showing the recognition result on original image.
+            display_img = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            cv2.rectangle(display_img, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            cv2.putText(display_img, char, (x, y-5), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            cv2.imshow("Recognition Progress", display_img)
+            cv2.waitKey(0)
+        
+        cv2.destroyAllWindows()
+
         lines = self.line_grouping(characters)
-        text = self.reconstruct_text(lines)
+        result = self.reconstruct_text(lines)
 
         # Calculating accuracy stats!
-        words = text.split()
+        recognized_text = result['text']
+        words = recognized_text.split()
+
         known_words = [w for w in words if not w.startswith('*')]
         accuracy = len(known_words)/len(words) if words else 0
         
         return {
-            'text': text,
+            'text': recognized_text,
             'accuracy': accuracy,
             'char_count': len(''.join(words)),
             'word_count': len(words),
-            'unknown_words': [w.strip('*') for w in words if w.startswith('*')]
+            'unknown_words': [w.strip('*') for w in words if w.startswith('*')],
+            'confidence': result['confidence']
         }
         
 
@@ -231,7 +282,7 @@ class GreekTextRecognizer:
             x, y, w, h = cv2.boundingRect(contour)
             
             # Filtering out noise (very small contours).
-            if w > 5 and h > 5 and w*h > 30:
+            if w > 20 and h > 20 and w*h > 30:
                 # Extracting character ROI.
                 roi = image[y:y+h, x:x+w]
                 character_boxes.append((x, y, w, h, roi))
@@ -244,6 +295,8 @@ class GreekTextRecognizer:
         Returns the character itself and the 
         respective confidence of the prediction.
         """
+        processed_char = self.preprocess_character(char_image)
+
         char_pil = Image.fromarray(char_image).convert('L')
         char_tensor = self.transform(char_pil).unsqueeze(0).to(self.device)
         
@@ -253,6 +306,7 @@ class GreekTextRecognizer:
             conf, pred = torch.max(outputs, 1)
 
             char = self.idx_to_class[pred.item()]
+            
             return char.lower(), conf.item()
         
 
@@ -260,7 +314,8 @@ class GreekTextRecognizer:
 
 if __name__ == '__main__':
     recognizer = GreekTextRecognizer("ocr_model.pth", "cuda")
-    result = recognizer.recognize_text("/home/ml3/Desktop/Thesis/.venv/model_test.jpg")
+    img_path = "/home/ml3/Desktop/Thesis/.venv/model_test.jpg"
+    result = recognizer.recognize_text(img_path)
 
     print(f"Recognized Text: {result['text']}")
     print(f"Accuracy: {result['accuracy']:.1%}")
