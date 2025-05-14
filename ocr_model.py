@@ -295,6 +295,29 @@ def train_model():
 
 # ----------------------------------------------------------------------------#
 
+def display_samples(test_loader):
+    '''Displaying 20 samples that the model uses for training.'''
+    dataiter = iter(test_loader)
+    images, labels = next(dataiter)
+
+    fig = plt.figure(figsize=(12, 8))
+    for i in range(min(20, len(images))):
+        ax = fig.add_subplot(4, 5, i+1)
+        img = images[i]
+        label = full_dataset.classes[labels[i]]
+        
+        img = img * 0.5 + 0.5
+        npimg = img.numpy()
+        plt.imshow(npimg.squeeze(), cmap='gray')
+        ax.set_title(label)
+        ax.axis('off')
+
+    plt.suptitle("Input Images", y=1.02)
+    plt.tight_layout()
+    plt.show()
+
+# ----------------------------------------------------------------------------#
+
 if __name__ == "__main__":
 
     ''' Loading data through the data_loading.py file.'''
@@ -321,26 +344,7 @@ if __name__ == "__main__":
 
     print(f"\nFinal Test Accuracy: {test_acc:.2f}%")
 
-# ----------------------------------------------------------------------------#
-
-    '''Displaying data samples!'''
-    dataiter = iter(test_loader)
-    images, labels = next(dataiter)
-
-    fig = plt.figure(figsize=(12, 8))
-    for i in range(min(20, len(images))):
-        ax = fig.add_subplot(4, 5, i+1)
-        img = images[i]
-        label = full_dataset.classes[labels[i]]
-        
-        img = img * 0.5 + 0.5
-        npimg = img.numpy()
-        plt.imshow(npimg.squeeze(), cmap='gray')
-        ax.set_title(label)
-        ax.axis('off')
-
-    plt.suptitle("Input Images", y=1.02)
-    plt.tight_layout()
-    plt.show()
+    display_samples(test_loader)
 
 # ----------------------------------------------------------------------------#
+
