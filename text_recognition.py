@@ -12,6 +12,10 @@ from data_loading import class_mapping
 
 # ----------------------------------------------------------------------------#
 
+SHOW_PREDICTIONS = True
+
+# ----------------------------------------------------------------------------#
+
 class GreekTextRecognizer:
     def __init__(self, model_path, device):
         self.device = device
@@ -41,15 +45,25 @@ class GreekTextRecognizer:
 
         return model
     
-    def visualize_detections(self, image, characters):
+    def visualize_detections(self, image, characters, show_predictions=False):
         """Displaying the input image with detected character bounding boxes."""
         display_img = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        for (x, y, w, h, _) in characters:
+        for (x, y, w, h, roi) in characters:
             cv2.rectangle(display_img, (x, y), (x+w, y+h), (0, 255, 0), 2)
+
+            if show_predictions:
+                char, conf = self.recognize_character(roi)
+
+                label = f"{char} ({conf:.2f})".encode('utf-8').decode('utf-8')
+
+                cv2.putText(display_img, label, (x, y-5), 
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
         
         cv2.imshow("Character Detections", display_img)
-        cv2.waitKey(0)
+        key = cv2.waitKey(0)
         cv2.destroyAllWindows()
+
+        return key 
     
     def load_greek_dictionary(self, dict_path):
         """Loading the Greek dictionary into a set for faster lookup."""
@@ -91,11 +105,11 @@ class GreekTextRecognizer:
         # Creating a padded image.
         h, w = char_image.shape
         size = max(h, w) + 10
-        padded = np.zeros((size, size), dtype=np.unit8)
+        padded = np.zeros((size, size), dtype=np.uint8)
 
         y_offset = (size - h) // 2
         x_offset = (size - w) // 2
-        padded[y_offset:y_offset+h, x_offset+w] = char_image
+        padded[y_offset:y_offset+h, x_offset:x_offset+w] = char_image
 
         blurred = cv2.GaussianBlur(padded, (3, 3), 0)
         thresh = cv2.adaptiveThreshold(
@@ -105,7 +119,7 @@ class GreekTextRecognizer:
         )
 
         resized = cv2.resize(thresh, (80, 45),
-                              interpolatiion=cv2.INTER_AREA)
+                              interpolation=cv2.INTER_AREA)
         
         return resized
 
@@ -239,7 +253,8 @@ class GreekTextRecognizer:
         image = self.preprocess_image(image_path)
         characters = self.detect_characters(image)
 
-        self.visualize_detections(image, characters)
+        self.visualize_detections(image, characters, 
+                                  show_predictions=SHOW_PREDICTIONS)
     
         # Visualizations for each character.
         for i, (x, y, w, h, roi) in enumerate(characters):
@@ -333,6 +348,7 @@ class GreekTextRecognizer:
             
             return char.lower(), conf.item()
         
+
 # ----------------------------------------------------------------------------#
 
 if __name__ == '__main__':
@@ -340,6 +356,10 @@ if __name__ == '__main__':
     img_path = "/home/ml3/Desktop/Thesis/.venv/model_test.jpg"
     result = recognizer.recognize_text(img_path)
 
+    print("\nFinal Results:")
     print(f"Recognized Text: {result['text']}")
     print(f"Accuracy: {result['accuracy']:.1%}")
+    print(f"Confidence: {result['confidence']:.2f}")
+    print(f"Character Count: {result['char_count']}")
+    print(f"Word Count: {result['word_count']}")
     print(f"Unknown Words: {result['unknown_words']}")
