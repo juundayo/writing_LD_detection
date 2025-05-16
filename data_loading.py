@@ -10,8 +10,9 @@ from class_renaming import class_mapping
 
 # ----------------------------------------------------------------------------#
 
-AUGMENTATIONS = 3
-SPACE_AUGMENTATIONS = 20
+AUGMENTATIONS = 2000
+SPACE_AUGMENTATIONS = 2500
+AUGMENT = True
 
 # ----------------------------------------------------------------------------#
 
@@ -75,6 +76,7 @@ def dataAugmentation(image_path, aug_number):
     except Exception as e:
         print(f"Error augmenting image {image_path}: {str(e)}")
 
+# ----------------------------------------------------------------------------#
 
 class GreekLetterDataset(Dataset):
     def __init__(self, root_dir, transform=None):
@@ -82,7 +84,7 @@ class GreekLetterDataset(Dataset):
         self.transform = transform
         self.train_dataset = None
         self.test_dataset = None
-        self._load_images()
+        self.load_images()
         
         # Getting all unique classes!
         all_classes = sorted(list(set([img[1] for img in self.train_dataset + self.test_dataset])))
@@ -96,8 +98,8 @@ class GreekLetterDataset(Dataset):
         self.original_to_idx = {orig_cls: i for i, orig_cls in enumerate(all_classes)}
         
 
-    def _iterate_through(self, dataset=None, ADD_AUGMENTATIONS=False):
-        images = []
+    def iterate_through(self):
+        images_by_class = {}
         character_types = ['SMALL', 'SPECIAL']
         sub_folders = ['SingleCharacters', 'Symbols']
 
@@ -121,48 +123,63 @@ class GreekLetterDataset(Dataset):
                         
                     # Saving the letter as a class name.
                     class_name = letter_folder
-
-                    # Changing the amount of augmentations based on the class.
-                    if class_name == ' ':
-                        aug_number = SPACE_AUGMENTATIONS
-                    else:
-                        aug_number = AUGMENTATIONS
-
+                    images_by_class.setdefault(class_name, [])
+                    
+                    # Skipping to avoid duplicates!
                     for img_name in os.listdir(letter_path):
-                            
-                        # Skipping to avoid duplicates!
                         if '_aug' in img_name:
                             continue
-                    
+
                         img_path = os.path.join(letter_path, img_name)
-                        
-                        if ADD_AUGMENTATIONS:
-                            dataAugmentation(img_path, aug_number) 
+                        images_by_class[class_name].append(img_path)
 
-                        images.append((img_path, class_name))
-                    
-                        # Including augmented versions in the dataset.
-                        if ADD_AUGMENTATIONS:
-                            base, ext = os.path.splitext(img_name)
-                            for i in range(AUGMENTATIONS):
-                                aug_path = os.path.join(letter_path, 
-                                                        f"{base}_aug{i}{ext}")
-                                if os.path.exists(aug_path):
-                                    images.append((aug_path, class_name))
-        
-        return images
+        return images_by_class
 
-    def _load_images(self):
+    def load_images(self):
+        all_images = self.iterate_through()
 
-        full_dataset = self._iterate_through()
+        train_dataset = []
+        test_dataset = []
 
-        train_dataset, test_dataset = train_test_split(full_dataset, test_size=0.3, 
-                                               random_state=1)
+        for class_name, image_paths in all_images.items():
+            train_imgs, test_imgs = train_test_split(
+                image_paths, test_size=0.3, random_state=1
+            )
 
-        augmented_dataset = self._iterate_through(train_dataset, 
-                                                  ADD_AUGMENTATIONS=True)
-        
-        self.train_dataset = augmented_dataset
+            train_dataset.extend([(path, class_name) for path in train_imgs])
+            test_dataset.extend([(path, class_name) for path in test_imgs])
+            
+            '''Creating augmentations for the train and test dataset.'''
+            aug_number = SPACE_AUGMENTATIONS if class_name == ' ' else AUGMENTATIONS
+
+            if AUGMENT:
+                # Augmentations in the train set.
+                for path in train_imgs:
+                    for i in range(aug_number):
+                        dataAugmentation(path, 1)
+                        base, ext = os.path.splitext(path)
+                        aug_path = f"{base}_aug0{ext}"
+
+                        if os.path.exists(aug_path):
+                            renamed_path = f"{base}_augT{i}{ext}"
+                            os.rename(aug_path, renamed_path)
+                            train_dataset.append((renamed_path, class_name))
+
+                # Augmentations in the test set.
+                for path in test_imgs:
+                    for i in range(aug_number):
+                        dataAugmentation(path, 1)
+                        base, ext = os.path.splitext(path)
+                        aug_path = f"{base}_aug0{ext}"
+
+                        if os.path.exists(aug_path):
+                            renamed_path = f"{base}_augV{i}{ext}"
+                            os.rename(aug_path, renamed_path)
+                            test_dataset.append((renamed_path, class_name))
+
+        print(f"Created {AUGMENTATIONS} augmentations for every image!")
+
+        self.train_dataset = train_dataset
         self.test_dataset = test_dataset
     
     def __len__(self):
@@ -180,8 +197,10 @@ class GreekLetterDataset(Dataset):
     
     def get_datasets(self):
         return (
-            GreekLetterSubDataset(self.train_dataset, self.transform, self.original_to_idx),
-            GreekLetterSubDataset(self.test_dataset, self.transform, self.original_to_idx)
+            GreekLetterSubDataset(self.train_dataset, self.transform,
+                                   self.original_to_idx),
+            GreekLetterSubDataset(self.test_dataset, self.transform, 
+                                  self.original_to_idx)
         )
     
 class GreekLetterSubDataset(Dataset):
