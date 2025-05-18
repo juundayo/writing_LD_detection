@@ -1,20 +1,24 @@
 # ----------------------------------------------------------------------------#
 
-import cv2
-import torch
-from torchvision import transforms
-from PIL import Image, ImageDraw, ImageFont
-from collections import defaultdict
+import os
 import numpy as np
+import torch
+import cv2
+import matplotlib.pyplot as plt
+from torchvision import transforms
+from PIL import Image, ImageOps
+import ckwrap
+from skimage import io
+from collections import defaultdict
 
 from ocr_model import LetterOCR
 from data_loading import class_mapping
 
 # ----------------------------------------------------------------------------#
 
-THRESHOLD = 120
-SHOW_PREDICTIONS = True
-img_path = "/home/ml3/Desktop/Thesis/.venv/model_test.jpg"
+IMG_PATH = "/home/ml3/Desktop/Thesis/.venv/model_test.jpg"
+DUMP = "/home/ml3/Desktop/Thesis/LetterDump"
+THRESHOLD = 100
 
 # ----------------------------------------------------------------------------#
 
@@ -22,7 +26,8 @@ class GreekTextRecognizer:
     def __init__(self, model_path, device):
         self.device = device
         self.model = self.load_model(model_path, len(class_mapping))
-        
+        os.makedirs(DUMP, exist_ok=True)
+
         # Inverse mapping from index to class name.
         self.classes = sorted(class_mapping.values())
         self.idx_to_class = {i: cls for i, cls in enumerate(self.classes)}
@@ -36,37 +41,17 @@ class GreekTextRecognizer:
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5])
         ])
-        
+
         self.HYPHEN_CLASS = 'hyphen'
-    
+
     def load_model(self, model_path, num_classes):
         model = LetterOCR(num_classes=num_classes)
         model.load_state_dict(torch.load(model_path, map_location=self.device))
         model.eval()
         model.to(self.device)
 
+        print("Loaded the model!")
         return model
-    
-    def visualize_detections(self, image, characters, show_predictions=False):
-        """Displaying the input image with detected character bounding boxes."""
-        display_img = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        for (x, y, w, h, roi) in characters:
-            cv2.rectangle(display_img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-
-            if show_predictions:
-                char, conf = self.recognize_character(roi)
-
-                label = f"{char} ({conf:.2f})".encode('utf-8').decode('utf-8')
-
-                image = Image.fromarray(cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB))
-                draw = ImageDraw.Draw(image)
-                draw.text((x, y - 5), label, fill=(255, 0, 0))
-        
-        cv2.imshow("Character Detections", display_img)
-        key = cv2.waitKey(0)
-        cv2.destroyAllWindows()
-
-        return key 
     
     def load_greek_dictionary(self, dict_path):
         """Loading the Greek dictionary into a set for faster lookup."""
@@ -81,329 +66,275 @@ class GreekTextRecognizer:
         print('Loaded the dictionary!')
         return dictionary
     
-    def preprocess_image(self, image_path):
-        """
-        Loads and preprocesses the image for character detection.
-        Using adaptive threshold for better performance.
-        """
-        image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-
-        # Adaptive histogram equalization for contrast.
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        image = clahe.apply(image)
-
-        image = cv2.GaussianBlur(image, (3, 3), 0)
-        image = cv2.adaptiveThreshold(
-            image, 255, 
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV, 21, 10 
-        )
-
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-        image = cv2.morphologyEx(image, cv2.MORPH_CLOSE, kernel)
-
-        return image
-    
-    def preprocess_character(self, char_image):
-        # Creating a padded image.
-        h, w = char_image.shape
-        size = max(h, w) + 10
-        padded = np.zeros((size, size), dtype=np.uint8)
-
-        y_offset = (size - h) // 2
-        x_offset = (size - w) // 2
-        padded[y_offset:y_offset+h, x_offset:x_offset+w] = char_image
-
-        blurred = cv2.GaussianBlur(padded, (3, 3), 0)
-        thresh = cv2.adaptiveThreshold(
-            blurred, 255, 
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-            cv2.THRESH_BINARY_INV, 11, 2
-        )
-
-        resized = cv2.resize(thresh, (80, 45),
-                              interpolation=cv2.INTER_AREA)
-        
-        return resized
-
-    def line_grouping(self, characters):
-        '''
-        Groups characters into lines based on their y-coordinate.
-        We use the median character height to calculate the height
-        of each line dynamically.
-        '''
-
-        if not characters:
-            return []
-        
-        heights = [h for _, _, _, h, _ in characters]
-        median_height = np.median(heights) if heights else 20
-        y_threshold = median_height * 0.7
-
-        # Sorting characters by y and x.
-        sorted_chars = sorted(characters, key=lambda c: (c[1], c[0]))
-        
-        lines = []
-        current_line = []
-        
-        for i, char in enumerate(sorted_chars):
-            if not current_line:
-                current_line.append(char)
-            else:
-                # Comparing the y-position with first character 
-                # in the current line.
-                if abs(char[1] - current_line[0][1]) < y_threshold:
-                    current_line.append(char)
-                else:
-                    # Sorting characters in line by x-position.
-                    current_line.sort(key=lambda c: c[0])
-                    lines.append(current_line)
-                    current_line = [char]
-        
-        # The final line.
-        if current_line:
-            current_line.sort(key=lambda c: c[0])
-            lines.append(current_line)
-            
-        return lines
-                
-    def reconstruct_text(self, lines):
-        """
-        Recognizing each character and resontructing them into words
-        We first turn them into small letters using lower(), so as to
-        improve reading accuracy. For example, χ and Χ look quite similar
-        and there is a probability that the model predicts the wrong variant
-        of the letter.
-        Letters are separated with space, and a hyphen case is also being 
-        taken into consideration. For example, e-xample is being read as
-        example.
-        """
-        full_text = []
-        previous_word_hyphenated = False
-        previous_word = []
-        word_stats = defaultdict(int)
-        confidence_scores = []
-        
-        for line in lines:
-            current_line_words = []
-            current_word = []
-            current_confidences = []
-            
-            for x, y, w, h, roi in line:
-                # Converting into small characters.
-                char, conf = self.recognize_character(roi)
-                char = char.lower()
-                confidence_scores.append(conf)
-                
-                if char == ' ':
-                    # Only adding a word if the list is not empty.
-                    if current_word:
-                        word = ''.join(current_word)
-                        avg_conf = sum(current_confidences)/len(current_confidences)
-
-                        marked_word = self.mark_unknown(word, avg_conf)
-                        current_line_words.append(marked_word)
-                        current_word = []
-                        current_confidences = []
-                elif char == self.HYPHEN_CLASS:
-                    # Only marked as hyphenated if it's part of a word.
-                    if current_word:  
-                        previous_word_hyphenated = True
-                else:
-                    current_word.append(char)
-                    current_confidences.append(conf)
-            
-            # Adding the last word in the line if it exists.
-            if current_word:
-                word = ''.join(current_word)
-                avg_conf = sum(current_confidences)/len(current_confidences) if current_confidences else 0
-                current_line_words.append(self.mark_unknown(word, avg_conf))
-            
-            # Handling hyphenated words from the previous line.
-            if previous_word_hyphenated and current_line_words:
-                if previous_word:
-                    # Combining with the first word of the current line.
-                    joined_word = previous_word[-1] + current_line_words[0]
-
-                    # Checking if the joined word exists in the dictionary.
-                    if joined_word.lower() in self.greek_dictionary:
-                        previous_word[-1] = joined_word
-                        current_line_words = current_line_words[1:]
-            
-            # Adding words from this line to the full text.
-            # Also adding space if not hyphentated.
-            if previous_word:
-                full_text.extend(previous_word)
-                if not previous_word_hyphenated:  
-                    full_text.append(' ')
-            
-            previous_word = current_line_words
-            previous_word_hyphenated = False
-        
-        # Adding any remaining words from the last line.
-        if previous_word:
-            full_text.extend(previous_word)
-        
-        avg_confidence = sum(confidence_scores)/len(confidence_scores) if confidence_scores else 0
-
-        return {
-            'text': ''.join(full_text).strip(),
-            "confidence": avg_confidence
-        }
-    
     def mark_unknown(self, word, confidence=0):
         if (word.lower() not in self.greek_dictionary) or (confidence < 0.7):
             return f"*{word}*"
+        
         return word
-
-    def recognize_text(self, image_path):
-        """Full pipeline for text recognition with line and word handling."""
-        image = self.preprocess_image(image_path)
-        characters = self.detect_characters(image)
-
-        self.visualize_detections(image, characters, 
-                                  show_predictions=SHOW_PREDICTIONS)
-    
-        # Visualizations for each character.
-        for i, (x, y, w, h, roi) in enumerate(characters):
-            cv2.imshow(f"Character {i}", roi)
-            cv2.waitKey(0)
-            
-            # Recognizing the character.
-            char, conf = self.recognize_character(roi)
-            print(f"Recognized: {char} (confidence: {conf:.2f})")
-            
-            # Showing the recognition result on original image.
-            display_img = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-            cv2.rectangle(display_img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-            cv2.putText(display_img, char, (x, y-5), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-            cv2.imshow("Recognition Progress", display_img)
-            cv2.waitKey(0)
         
-            cv2.destroyAllWindows()
-
-        lines = self.line_grouping(characters)
-        result = self.reconstruct_text(lines)
-
-        # Calculating accuracy stats!
-        recognized_text = result['text']
-        words = recognized_text.split()
-
-        known_words = [w for w in words if not w.startswith('*')]
-        accuracy = len(known_words)/len(words) if words else 0
-        
-        return {
-            'text': recognized_text,
-            'accuracy': accuracy,
-            'char_count': len(''.join(words)),
-            'word_count': len(words),
-            'unknown_words': [w.strip('*') for w in words if w.startswith('*')],
-            'confidence': result['confidence']
-        }
-        
-
-    def detect_characters(self, image):
-        """ 
-        Character detection using contour finding and line awareness.
-        A rectangle is drawn around each character found.
+    def process_image(self, IMG_PATH):
         """
-        # Thresholding the image and finding contours.
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
-            image, connectivity=8
-        )
+        Processes the input image through grayscale conversion,
+        thresholding, and line/character segmentation.
+        """
+        # Image loading and grayscale conversion.
+        img = Image.open(IMG_PATH)
+        img_gray = ImageOps.grayscale(img)
+        img_array = np.array(img_gray)
         
-        heights = [stat[3] for stat in stats[1:] if stat[3] > image.shape[0]*0.05]
-        median_h = np.median(heights) if heights else image.shape[0]*0.1
+        # Thresholding.
+        threshold = THRESHOLD
+        binary = np.where(img_array <= threshold, 0, 255).astype(np.uint8)
 
-        min_height = max(5, median_h * 0.4)  # At least 40% of median height.
-        max_height = median_h * 2.5          # No more than 2.5x median height.
-        min_area = (median_h * 0.5) ** 2     # Minimum area threshold.
-        max_area = (median_h * 3) ** 2       # Maximum area threshold.
+        # Show the image
+        plt.imshow(binary, cmap='gray')
+        plt.title("Thresholded Binary Image")
+        plt.axis('off')
+        plt.show()
 
-        character_boxes = []
-        for i in range(1, num_labels):  # Skip background (0).
-            x, y, w, h, area = stats[i]
-            
-            # Aspect ratio and solidity (density).
-            component_mask = (labels == i)
-            component_pixels = image[component_mask]
-            density = np.sum(component_pixels) / (255 * area)
-            
-            if not (min_height <= h <= max_height):
-                continue
-            if not (min_area <= area <= max_area):
-                continue
-            if density < 0.2:  # At least 20% of area should be ink.
-                continue
-                
-            # Aspect ratio filtering (for characters).
-            aspect_ratio = w / h
-            if not (0.3 <= aspect_ratio <= 2.5):
-                continue
-                
-            # Extracting the component.
-            roi = image[y:y+h, x:x+w]
-            character_boxes.append((x, y, w, h, roi))
+        return binary
+
     
-        return self.merge_character_boxes(character_boxes)
+    def black_and_white(self, a):
+        """
+        Converts grayscale image to strict black and white
+        using a threshold of 200.
+        """
+        m = a.copy()
+        for i in range(len(m)):
+            for j in range(len(m[0])):
+                if m[i][j] > 200:
+                    m[i][j] = 255
+                else:
+                    m[i][j] = 0
+        return m
     
-    def merge_character_boxes(self, boxes, x_threshold=0.2, y_threshold=0.5):
-        '''
-        Merging boxes that are close horizontally or vertically.
-        For exmaple tonos and letters that look like two letters combined.
-        '''
-        if not boxes:
-            return []
+    def find_line_coordinates(self, logo):
+        """
+        Detects lines of text in the image and returns their
+        bounding coordinates.
+        """
+        coords = []
+        xycoords = []
         
-        boxes = sorted(boxes, key=lambda b: (b[1], b[0]))
-
-        merged = []
-        current = list(boxes[0])
-
-        for box in boxes[1:]:
-            x, y, w, h, roi = box
-            curr_x, curr_y, curr_w, curr_h, curr_roi = current
-        
-            # Overlap and distance metrics.
-            x_dist = abs(x - (curr_x + curr_w))
-            y_dist = abs(y - (curr_y + curr_h))
-            avg_height = (h + curr_h) / 2
+        def line_coords(coords):
+            xmin = coords[0][0][0]
+            xmax = coords[-1][0][0]
+            ymin = 20000
+            ymax = 0
             
-            # Checking if boxes should be merged.
-            if (x_dist < avg_height * x_threshold and 
-                y_dist < avg_height * y_threshold):
-                
-                # Merging the boxes.
-                new_x = min(x, curr_x)
-                new_y = min(y, curr_y)
-                new_w = max(x + w, curr_x + curr_w) - new_x
-                new_h = max(y + h, curr_y + curr_h) - new_y
-                
-                # Creating the new ROI.
-                new_roi = np.zeros((new_h, new_w), dtype=np.uint8)
-                new_roi[curr_y-new_y:curr_y-new_y+curr_h, 
-                    curr_x-new_x:curr_x-new_x+curr_w] = curr_roi
-                new_roi[y-new_y:y-new_y+h, x-new_x:x-new_x+w] = roi
-                
-                current = [new_x, new_y, new_w, new_h, new_roi]
+            for i in coords:
+                for j in i:
+                    if j[1] > ymax:
+                        ymax = j[1]
+                    if j[1] < ymin:
+                        ymin = j[1]
+            
+            xycoords.append([xmin, xmax+2, ymin+1, ymax])
+        
+        for i in range(len(logo[1:-1,1:-1])):
+            coo = []
+            flag = 0
+            
+            # Check if line contains text
+            for c in logo[1:-1,1:-1][i]:
+                if c < 200:
+                    flag = 1
+            
+            if flag == 1:
+                # Find character boundaries
+                for b in range(len(logo[1:-1,1:-1][i])):
+                    if logo[1:-1,1:-1][i][b] > 200:
+                        try:
+                            if logo[1:-1,1:-1][i][b+1] < 200:
+                                coo.append([i,b+1])
+                        except:
+                            pass
+                    
+                    if logo[1:-1,1:-1][i][b] < 200:
+                        try:
+                            if logo[1:-1,1:-1][i][b+1] > 200:
+                                coo.append([i,b])
+                        except:
+                            pass
             else:
-                merged.append(tuple(current))
-                current = list(box)
+                if len(coords) > 0:
+                    line_coords(coords)
+                    coords = []
+            
+            if len(coo) > 0:
+                coords.append(coo)
         
-        merged.append(tuple(current))
+        print("Line Coordinates Found:", xycoords)
+        return xycoords
+    
+    def detect_spaces(self, logo, xycoords):
+        """
+        Uses k-means clustering to detect spaces between words
+        based on vertical whitespace columns.
+        """
+        spaces = np.array([0])
+        ctr = 0
+        
+        for y in xycoords:
+            sp = []
+            a = self.black_and_white(logo[y[0]:y[1],y[2]:y[3]])
+            
+            # Count consecutive white columns
+            for i in range(len(a[0,:])):
+                f = 0
+                for j in a[:,i]:
+                    if j == 0:
+                        f = 1
+                
+                if f != 1:
+                    ctr += 1
+                if f == 1:
+                    sp.append(ctr)
+                    ctr = 0
+            
+            nums = np.array([jj for jj in sp if jj != 0])
+            
+            if len(nums) == 0:
+                spaces = np.concatenate((spaces, np.array([2])), axis=None)
+            else:
+                # Cluster space widths into two groups (small and large spaces)
+                km = ckwrap.ckmeans(nums, 2)
+                spaces = np.concatenate((spaces, km.labels, np.array([2])), axis=None)
+        
+        return spaces
+    
+    def segment_characters(self, logo, finalXY):
+        """
+        Segments individual characters from line segments and
+        saves them to disk.
+        """
+        col = []
+        count = 0
+        
+        for hoe in finalXY:
+            newC = [0]
+            
+            def flagCalc(i):
+                flag = 1
+                for j in range(len(logo[hoe[0]:hoe[1],hoe[2]:hoe[3]][:,i])):
+                    if logo[hoe[0]:hoe[1],hoe[2]:hoe[3]][:,i][j] < 150:
+                        flag = 0
+                return flag
+            
+            # Find character boundaries
+            for i in range(len(logo[hoe[0]:hoe[1],hoe[2]:hoe[3]][0,:])):
+                try:
+                    if flagCalc(i) < flagCalc(i+1):
+                        newC.append(i+1)
+                except:
+                    pass
+            
+            newC.append(hoe[3])
+            col.append(newC)
+            
+            # Saving each character.
+            for i in range(len(newC)-1):
+                A = self.black_and_white(logo[hoe[0]:hoe[1],hoe[2]:hoe[3]][:,newC[i]:newC[i+1]])
+                A = A.astype(np.uint8)
+                im = Image.fromarray(A)
+                im.save(DUMP+"/"+str(count)+".png")
+                count += 1
+        
+        return col
+    
+    def clean_and_resize(self, path):
+        """
+        Processes character images by removing borders and
+        standardizing size for OCR.
+        """
+        a = io.imread(path)
+        
+        # Threshold image
+        for i in range(len(a)):
+            for j in range(len(a[0])):
+                if a[i][j] > 200:
+                    a[i][j] = 255
+                else:
+                    a[i][j] = 0
+        
+        def flagCalc(i):
+            flag = 0
+            for j in range(len(i)):
+                if i[j] == 0:
+                    flag = 1
+            return flag
+        
+        # Find content boundaries
+        y1 = 0
+        y2 = a.shape[0]
+        x1 = 0
+        x2 = a.shape[1]
+        
+        for i in range(len(a)-1):
+            if flagCalc(a[i]) < flagCalc(a[i+1]):
+                y2 = a.shape[0]
+                if (i+1) < y2:
+                    y1 = i+1
+            elif flagCalc(a[i]) > flagCalc(a[i+1]):
+                if (i-1) > y1:
+                    y2 = i-1
+        
+        for i in range(len(a[0,:])-1):
+            if flagCalc(a[:,i]) < flagCalc(a[:,i+1]):
+                if (i+1) < x2:
+                    x1 = i+1
+            elif flagCalc(a[:,i]) > flagCalc(a[:,i+1]):
+                if (i-1) > x1:
+                    x2 = i-1
+        
+        # Crop and save
+        im = Image.fromarray(a[y1:y2,x1:x2])
+        im.save(path)
+        
+        # Resize with padding
+        a = io.imread(path)
+        if a.shape[0] > a.shape[1]:
+            f = 28/a.shape[0]
+        else:
+            f = 28/a.shape[1]
+        
+        b = Image.fromarray(a, mode='L').resize((
+            int(a.shape[1]*f), int(a.shape[0]*f)), Image.BICUBIC)
+        
+        c = Image.fromarray(np.full((32, 32), 255).astype('uint8'), mode='L')
 
-        return merged
+        img_w, img_h = b.size
+        bg_w, bg_h = c.size
+        offset = ((bg_w - img_w) // 2, (bg_h - img_h) // 2)
 
+        c.paste(b, offset)
+        c.save(path)
+        
+        # Final thresholding
+        a_bw = io.imread(path)
+        a_bw = self.black_and_white(a_bw)
+
+    
+    def add_margin(self, pil_img, top, right, bottom, left, color):
+        """Adds margins to an image."""
+        width, height = pil_img.size
+
+        new_width = width + right + left
+        new_height = height + top + bottom
+
+        result = Image.new(pil_img.mode, (new_width, new_height), color)
+        result.paste(pil_img, (left, top))
+
+        return result
+    
     def recognize_character(self, char_image):
         """
         Recognizing a single character.
         Returns the character itself and the 
         respective confidence of the prediction.
         """
-        processed_char = self.preprocess_character(char_image)
-
-        char_pil = Image.fromarray(processed_char).convert('L')
+        char_pil = Image.fromarray(char_image).convert('L')
         char_tensor = self.transform(char_pil).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
@@ -414,14 +345,115 @@ class GreekTextRecognizer:
             char = self.idx_to_class[pred.item()]
             
             return char.lower(), conf.item()
+    
+    def reconstruct_text(self, charPred, spaces):
+        """
+        Reconstructs the recognized characters into words and lines,
+        using the space information and dictionary lookup.
+        """
+        full_text = []
+        current_word = []
+        current_confidences = []
+        confidence_scores = []
+        word_stats = defaultdict(int)
         
+        co = 0
+        for char in charPred:
+            if spaces[co] == 1:  # Space between words.
+                if current_word:
+                    word = ''.join(current_word)
+                    avg_conf = sum(current_confidences)/len(current_confidences) if current_confidences else 0
+                    marked_word = self.mark_unknown(word, avg_conf)
+                    full_text.append(marked_word)
+                    current_word = []
+                    current_confidences = []
+                full_text.append(' ')
+            elif spaces[co] == 2:  # New line.
+                if current_word:
+                    word = ''.join(current_word)
+                    avg_conf = sum(current_confidences)/len(current_confidences) if current_confidences else 0
+                    marked_word = self.mark_unknown(word, avg_conf)
+                    full_text.append(marked_word)
+                    current_word = []
+                    current_confidences = []
+                full_text.append('\n')
+            else:
+                current_word.append(char)
+                current_confidences.append(1.0)  # Placeholder confidence.
+            
+            co += 1
+        
+        # Adds the last word if it exists.
+        if current_word:
+            word = ''.join(current_word)
+            avg_conf = sum(current_confidences)/len(current_confidences) if current_confidences else 0
+            marked_word = self.mark_unknown(word, avg_conf)
+            full_text.append(marked_word)
+        
+        # Calculating statistics!
+        text = ''.join(full_text).strip()
+        words = [w for w in text.split() if not w.startswith('\n')]
+        known_words = [w for w in words if not w.startswith('*')]
+        accuracy = len(known_words)/len(words) if words else 0
+        
+        return {
+            'text': text,
+            'accuracy': accuracy,
+            'confidence': np.mean(confidence_scores) if confidence_scores else 0,
+            'char_count': len(text.replace('\n', '')),
+            'word_count': len(words),
+            'unknown_words': [w.strip('*') for w in words if w.startswith('*')]
+        }
+    
+    def recognize_text(self):
+        """
+        Main OCR pipeline that processes an image file and
+        returns the recognized text with statistics.
+        """
+        # Process image and detect lines
+        logo = self.process_image(IMG_PATH)
+        xycoords = self.find_line_coordinates(logo)
+        print("Line coords:", xycoords)
+
+        spaces = self.detect_spaces(logo, xycoords)
+        
+        # Segment characters.
+        self.segment_characters(logo, xycoords)
+        print("Character segmentation completed.")
+        
+        # Process each character.
+        for mm in os.listdir(DUMP+"/"):
+            self.clean_and_resize(DUMP+"/"+str(mm))
+        
+        # Recognize characters.
+        co = -1
+        charPred = []
+        confidence_scores = []
+        
+        while True:
+            co += 1
+            try:
+                image = Image.open(DUMP+"/"+str(co)+'.png')
+                char_array = np.asarray(image)
+                char, conf = self.recognize_character(char_array)
+                
+                charPred.append(char)
+                confidence_scores.append(conf)
+                #os.remove(DUMP+"/"+str(co)+'.png')
+            except:
+                break
+        
+        # Reconstruct text with dictionary checking
+        result = self.reconstruct_text(charPred, spaces)
+        
+        return result
 
 # ----------------------------------------------------------------------------#
 
-if __name__ == '__main__':
+if __name__ == '__main__':    
     recognizer = GreekTextRecognizer("ocr_model.pth", "cuda")
-    result = recognizer.recognize_text(img_path)
-
+    result = recognizer.recognize_text()
+    
     print("\nFinal Results:")
     print(f"Recognized Text: {result['text']}")
     print(f"Accuracy: {result['accuracy']:.1%}")
@@ -429,3 +461,5 @@ if __name__ == '__main__':
     print(f"Character Count: {result['char_count']}")
     print(f"Word Count: {result['word_count']}")
     print(f"Unknown Words: {result['unknown_words']}")
+
+# ----------------------------------------------------------------------------#
