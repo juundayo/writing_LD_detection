@@ -5,9 +5,12 @@ import torch.nn as nn
 import torch.optim as optim
 from torchvision import transforms
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix
 from torch.utils.data import DataLoader
+from collections import Counter
 import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
 from tqdm import tqdm
 import time
 
@@ -15,8 +18,10 @@ import data_loading as dl
 
 # ----------------------------------------------------------------------------#
 
-EPOCHS = 100
+EPOCHS = 1000
+PATIENCE = 500
 BATCH_SIZE = 16
+TRAIN = False
 
 # ----------------------------------------------------------------------------#
 
@@ -115,30 +120,30 @@ class LetterOCR(nn.Module):
         super(LetterOCR, self).__init__()
         
         # Initial convolution block.
-        self.conv1 = nn.Conv2d(1, 64, kernel_size=5, stride=1, padding=2)
-        self.bn1 = nn.BatchNorm2d(64)
+        self.conv1 = nn.Conv2d(1, 8, kernel_size=5, stride=1, padding=2)
+        self.bn1 = nn.BatchNorm2d(8)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         
         # Residual blocks.
-        self.layer1 = self._make_layer(64, 64, 3)
-        self.layer2 = self._make_layer(64, 128, 4, stride=2)
-        self.layer3 = self._make_layer(128, 256, 4, stride=2)
-        self.layer4 = self._make_layer(256, 512, 2, stride=2)
+        self.layer1 = self._make_layer(8, 8, 3)
+        self.layer2 = self._make_layer(8, 16, 4, stride=2)
+        self.layer3 = self._make_layer(16, 32, 4, stride=2)
+        self.layer4 = self._make_layer(32, 64, 2, stride=2)
         
         # Multi-scale feature fusion.
-        self.conv2 = nn.Conv2d(512, 256, kernel_size=1)
+        self.conv2 = nn.Conv2d(64, 32, kernel_size=1)
         self.up1 = nn.Upsample(scale_factor=2, mode='bilinear', 
                                align_corners=True)
-        self.conv3 = nn.Conv2d(256, 128, kernel_size=1)
+        self.conv3 = nn.Conv2d(32, 16, kernel_size=1)
         self.up2 = nn.Upsample(scale_factor=2, mode='bilinear', 
                                align_corners=True)
-        self.conv4 = nn.Conv2d(128, 64, kernel_size=1)
+        self.conv4 = nn.Conv2d(16, 8, kernel_size=1)
         
         # Final classification.
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.dropout = nn.Dropout(0.5)
-        self.fc = nn.Linear(512 + 256 + 128 + 64, num_classes)
+        self.dropout = nn.Dropout(0.7)
+        self.fc = nn.Linear(64 + 32 + 16 + 8, num_classes)
         
     def _make_layer(self, in_channels, out_channels, blocks, stride=1):
         downsample = None
@@ -218,8 +223,14 @@ def train_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = LetterOCR(num_classes=len(full_dataset.classes)).to(device)
     
+    labels = [label for _, label in train_dataset]
+    class_counts = Counter(labels)
+    weights = 1. / torch.tensor([class_counts[i] for i in range(len(full_dataset.classes))], 
+                                dtype=torch.float)
+
     # Loss function with label smoothing.
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    criterion = nn.CrossEntropyLoss(weight=weights.to(device), 
+                                    label_smoothing=0.1)
     
     # Optimizer with weight decay.
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
@@ -230,7 +241,7 @@ def train_model():
     
     # Early stopping!
     best_acc = 0.0
-    patience = 20
+    patience = PATIENCE
     patience_counter = 0
         
     pbar = tqdm(range(EPOCHS), desc="Training Progress", unit="epoch", 
@@ -282,7 +293,6 @@ def train_model():
         if test_acc > best_acc:
             best_acc = test_acc
             patience_counter = 0
-            torch.save(model.state_dict(), "ocr_model.pth")
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -318,6 +328,30 @@ def display_samples(test_loader):
 
 # ----------------------------------------------------------------------------#
 
+def plot_confusion_matrix(model, test_loader, device, class_names):
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images = images.to(device)
+            outputs = model(images)
+            _, preds = torch.max(outputs, 1)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.numpy())
+
+    cm = confusion_matrix(all_labels, all_preds)
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=False, cmap='Blues', xticklabels=class_names, 
+                yticklabels=class_names)
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    plt.title('Confusion Matrix')
+    plt.tight_layout()
+    plt.show()
+
+# ----------------------------------------------------------------------------#
+
 if __name__ == "__main__":
 
     ''' Loading data through the data_loading.py file.'''
@@ -337,14 +371,26 @@ if __name__ == "__main__":
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
     print(f"Found {len(full_dataset.classes)} classes: {full_dataset.classes}")
-
-    model = train_model()
+    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    test_acc = evaluate_model(model, test_loader, device)
 
-    print(f"\nFinal Test Accuracy: {test_acc:.2f}%")
+    if TRAIN:
+        model = train_model()
+        test_acc = evaluate_model(model, test_loader, device)
+        torch.save(model.state_dict(), 
+                   "/home/ml3/Desktop/Thesis/ocr_model.pth")
+        print(f"\nFinal Test Accuracy: {test_acc:.2f}%")
+    else:
+        model = LetterOCR(num_classes=len(full_dataset.classes)).to(device)
+        model.load_state_dict(torch.load("/home/ml3/Desktop/Thesis/ocr_model.pth"))
+        model.eval()
+        print("Loaded the model successfully.")
 
-    display_samples(test_loader)
+    # Displaying samples.
+    #display_samples(test_loader)
+
+    # Displaying a confusion matrix.
+    plot_confusion_matrix(model, test_loader, device, full_dataset.classes)
 
 # ----------------------------------------------------------------------------#
 
