@@ -12,7 +12,9 @@ from data_loading import class_mapping
 
 # ----------------------------------------------------------------------------#
 
+THRESHOLD = 120
 SHOW_PREDICTIONS = True
+img_path = "/home/ml3/Desktop/Thesis/.venv/model_test.jpg"
 
 # ----------------------------------------------------------------------------#
 
@@ -86,23 +88,19 @@ class GreekTextRecognizer:
         """
         image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
 
-        # Adaptice histogram equalization for contrast.
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+        # Adaptive histogram equalization for contrast.
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         image = clahe.apply(image)
 
-        image = cv2.medianBlur(image, 3)
-        
-        # Adaptive thresholding.
+        image = cv2.GaussianBlur(image, (3, 3), 0)
         image = cv2.adaptiveThreshold(
-            image, 255,
+            image, 255, 
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV, 25, 10
+            cv2.THRESH_BINARY_INV, 21, 10 
         )
-        
-        # Morphological operations to clean up!
+
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
         image = cv2.morphologyEx(image, cv2.MORPH_CLOSE, kernel)
-        image = cv2.morphologyEx(image, cv2.MORPH_OPEN, kernel)
 
         return image
     
@@ -140,37 +138,33 @@ class GreekTextRecognizer:
         
         heights = [h for _, _, _, h, _ in characters]
         median_height = np.median(heights) if heights else 20
-        
+        y_threshold = median_height * 0.7
+
         # Sorting characters by y and x.
         sorted_chars = sorted(characters, key=lambda c: (c[1], c[0]))
         
         lines = []
         current_line = []
         
-        for char in sorted_chars:
+        for i, char in enumerate(sorted_chars):
             if not current_line:
                 current_line.append(char)
             else:
-                # Comparing with the first character in the current line.
-                ref_char = current_line[0]
-                y_diff = abs(char[1] - ref_char[1])
-                
-                # Dynamic threshold based on character height.
-                if y_diff < median_height * 0.6: 
+                # Comparing the y-position with first character 
+                # in the current line.
+                if abs(char[1] - current_line[0][1]) < y_threshold:
                     current_line.append(char)
                 else:
-                    # Sorting the current line by x before adding.
+                    # Sorting characters in line by x-position.
                     current_line.sort(key=lambda c: c[0])
                     lines.append(current_line)
                     current_line = [char]
         
+        # The final line.
         if current_line:
             current_line.sort(key=lambda c: c[0])
             lines.append(current_line)
-        
-        # Sorting the lines by their average y position.
-        lines.sort(key=lambda line: np.mean([c[1] for c in line]))
-        
+            
         return lines
                 
     def reconstruct_text(self, lines):
@@ -318,27 +312,41 @@ class GreekTextRecognizer:
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
             image, connectivity=8
         )
-                
+        
+        heights = [stat[3] for stat in stats[1:] if stat[3] > image.shape[0]*0.05]
+        median_h = np.median(heights) if heights else image.shape[0]*0.1
+
+        min_height = max(5, median_h * 0.4)  # At least 40% of median height.
+        max_height = median_h * 2.5          # No more than 2.5x median height.
+        min_area = (median_h * 0.5) ** 2     # Minimum area threshold.
+        max_area = (median_h * 3) ** 2       # Maximum area threshold.
+
         character_boxes = []
-        min_height = image.shape[0] * 0.02  
-        max_height = image.shape[0] * 0.3 
-        aspect_ratio_range = (0.2, 3.0)
-
-        for i in range(1, num_labels):
+        for i in range(1, num_labels):  # Skip background (0).
             x, y, w, h, area = stats[i]
-
-            if (h >= min_height and h <= max_height and 
-                w/h >= aspect_ratio_range[0] and w/h <= aspect_ratio_range[1]):
-
-                component = (labels == i).astype("uint8") * 255
-                roi = component[y:y+h, x:x+w]
-
-                if np.mean(roi) > 15:
-                    character_boxes.append((x, y, w, h, roi))
-
-        character_boxes = self.merge_character_boxes(character_boxes)
-
-        return character_boxes
+            
+            # Aspect ratio and solidity (density).
+            component_mask = (labels == i)
+            component_pixels = image[component_mask]
+            density = np.sum(component_pixels) / (255 * area)
+            
+            if not (min_height <= h <= max_height):
+                continue
+            if not (min_area <= area <= max_area):
+                continue
+            if density < 0.2:  # At least 20% of area should be ink.
+                continue
+                
+            # Aspect ratio filtering (for characters).
+            aspect_ratio = w / h
+            if not (0.3 <= aspect_ratio <= 2.5):
+                continue
+                
+            # Extracting the component.
+            roi = image[y:y+h, x:x+w]
+            character_boxes.append((x, y, w, h, roi))
+    
+        return self.merge_character_boxes(character_boxes)
     
     def merge_character_boxes(self, boxes, x_threshold=0.2, y_threshold=0.5):
         '''
@@ -412,7 +420,6 @@ class GreekTextRecognizer:
 
 if __name__ == '__main__':
     recognizer = GreekTextRecognizer("ocr_model.pth", "cuda")
-    img_path = "/home/ml3/Desktop/Thesis/.venv/model_test.jpg"
     result = recognizer.recognize_text(img_path)
 
     print("\nFinal Results:")
