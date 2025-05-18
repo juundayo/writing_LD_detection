@@ -12,7 +12,7 @@ from class_renaming import class_mapping
 
 AUGMENTATIONS = 2000
 SPACE_AUGMENTATIONS = 2500
-AUGMENT = True
+AUGMENT = False
 
 # ----------------------------------------------------------------------------#
 
@@ -36,15 +36,15 @@ def dataAugmentation(image_path, aug_number):
     """
     Augmentation function used to take each letter and create a new randomly
     augmented version of it through:
-        → Random rotation (-10 to 10).
+        → Random rotation (-7 to 7).
         → Random contrast (1 to 1.5).
     """
     try:
         original_img = Image.open(image_path).convert('L')
         
         for i in range(aug_number):
-            ''' Random rotation (-10 to +10 degrees). '''
-            angle = random.uniform(-10, 10)
+            ''' Random rotation (-7 to +7 degrees). '''
+            angle = random.uniform(-7, 7)
             img_array = np.array(original_img)
             
             # Image center.
@@ -100,25 +100,22 @@ class GreekLetterDataset(Dataset):
 
     def iterate_through(self):
         images_by_class = {}
-        character_types = ['SMALL', 'SPECIAL']
+        character_types = ['SMALL', 'CAPS', 'SPECIAL']
         sub_folders = ['SingleCharacters', 'Symbols']
 
         for char_type in character_types:
             char_type_dir = os.path.join(self.root_dir, char_type)
             if not os.path.exists(char_type_dir):
-                print('TEST - Error in Caps-Small character type!')
                 continue
                 
             for sub_folder in sub_folders:
                 sub_folder_dir = os.path.join(char_type_dir, sub_folder)
                 if not os.path.exists(sub_folder_dir):
-                    print('TEST - Error in Double-Single character type!')
                     continue
                 
                 for letter_folder in sorted(os.listdir(sub_folder_dir)):
                     letter_path = os.path.join(sub_folder_dir, letter_folder)
                     if not os.path.isdir(letter_path):
-                        print('TEST - Error in letters!')
                         continue
                         
                     # Saving the letter as a class name.
@@ -150,9 +147,9 @@ class GreekLetterDataset(Dataset):
             test_dataset.extend([(path, class_name) for path in test_imgs])
             
             '''Creating augmentations for the train and test dataset.'''
-            aug_number = SPACE_AUGMENTATIONS if class_name == ' ' else AUGMENTATIONS
-
             if AUGMENT:
+                aug_number = SPACE_AUGMENTATIONS if class_name == 'space' else AUGMENTATIONS
+
                 # Augmentations in the train set.
                 for path in train_imgs:
                     for i in range(aug_number):
@@ -177,11 +174,14 @@ class GreekLetterDataset(Dataset):
                             os.rename(aug_path, renamed_path)
                             test_dataset.append((renamed_path, class_name))
 
-        print(f"Created {AUGMENTATIONS} augmentations for every image!")
+            
+        if AUGMENT:
+            print(f"Created augmentations successfully!")
 
         self.train_dataset = train_dataset
         self.test_dataset = test_dataset
-    
+        print("Loaded datasets successfully!")
+
     def __len__(self):
         return len(self.images)
     
