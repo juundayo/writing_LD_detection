@@ -3,7 +3,7 @@
 import cv2
 import torch
 from torchvision import transforms
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from collections import defaultdict
 import numpy as np
 
@@ -56,8 +56,9 @@ class GreekTextRecognizer:
 
                 label = f"{char} ({conf:.2f})".encode('utf-8').decode('utf-8')
 
-                cv2.putText(display_img, label, (x, y-5), 
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                image = Image.fromarray(cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB))
+                draw = ImageDraw.Draw(image)
+                draw.text((x, y - 5), label, fill=(255, 0, 0))
         
         cv2.imshow("Character Detections", display_img)
         key = cv2.waitKey(0)
@@ -86,18 +87,22 @@ class GreekTextRecognizer:
         image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
 
         # Adaptice histogram equalization for contrast.
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
         image = clahe.apply(image)
 
-        image = cv2.GaussianBlur(image, (3, 3), 0)
+        image = cv2.medianBlur(image, 3)
+        
+        # Adaptive thresholding.
         image = cv2.adaptiveThreshold(
-            image, 255, 
+            image, 255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV, 21, 10 # Previous: 11, 2.
+            cv2.THRESH_BINARY_INV, 25, 10
         )
-
+        
+        # Morphological operations to clean up!
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
         image = cv2.morphologyEx(image, cv2.MORPH_CLOSE, kernel)
+        image = cv2.morphologyEx(image, cv2.MORPH_OPEN, kernel)
 
         return image
     
@@ -129,34 +134,43 @@ class GreekTextRecognizer:
         We use the median character height to calculate the height
         of each line dynamically.
         '''
-        sorted_chars = sorted(characters, key=lambda c: (c[1], c[0]))
 
-        lines = []
-        current_line = []
-
+        if not characters:
+            return []
+        
         heights = [h for _, _, _, h, _ in characters]
         median_height = np.median(heights) if heights else 20
-        y_threshold = median_height * 0.7
-
-        for i, char in enumerate(sorted_chars):
+        
+        # Sorting characters by y and x.
+        sorted_chars = sorted(characters, key=lambda c: (c[1], c[0]))
+        
+        lines = []
+        current_line = []
+        
+        for char in sorted_chars:
             if not current_line:
                 current_line.append(char)
             else:
-                # Comparing the y-position with first character 
-                # in the current line.
-                if abs(char[1] - current_line[0][1]) < y_threshold:
+                # Comparing with the first character in the current line.
+                ref_char = current_line[0]
+                y_diff = abs(char[1] - ref_char[1])
+                
+                # Dynamic threshold based on character height.
+                if y_diff < median_height * 0.6: 
                     current_line.append(char)
                 else:
-                    # Sorting characters in line by x-position.
+                    # Sorting the current line by x before adding.
                     current_line.sort(key=lambda c: c[0])
                     lines.append(current_line)
                     current_line = [char]
         
-        # The final line.
         if current_line:
             current_line.sort(key=lambda c: c[0])
             lines.append(current_line)
-            
+        
+        # Sorting the lines by their average y position.
+        lines.sort(key=lambda line: np.mean([c[1] for c in line]))
+        
         return lines
                 
     def reconstruct_text(self, lines):
@@ -209,7 +223,7 @@ class GreekTextRecognizer:
             if current_word:
                 word = ''.join(current_word)
                 avg_conf = sum(current_confidences)/len(current_confidences) if current_confidences else 0
-                current_line_words.append(self.mark_unknown(word))
+                current_line_words.append(self.mark_unknown(word, avg_conf))
             
             # Handling hyphenated words from the previous line.
             if previous_word_hyphenated and current_line_words:
@@ -301,33 +315,78 @@ class GreekTextRecognizer:
         A rectangle is drawn around each character found.
         """
         # Thresholding the image and finding contours.
-        contours, hierarchy = cv2.findContours(
-            image, 
-            cv2.RETR_EXTERNAL,  # Only external contours!
-            cv2.CHAIN_APPROX_SIMPLE
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            image, connectivity=8
         )
                 
         character_boxes = []
-        for contour in contours:
-            x, y, w, h = cv2.boundingRect(contour)
+        min_height = image.shape[0] * 0.02  
+        max_height = image.shape[0] * 0.3 
+        aspect_ratio_range = (0.2, 3.0)
 
-            img_height, img_width = image.shape
-            min_dim = min(img_height, img_width)
-            
-            # Filtering out noise (very small contours).
-            if (w > img_width * 0.01 and h > img_height * 0.02 and 
-                w < img_width * 0.3 and h < img_height * 0.3 and 
-                w*h > (min_dim * 0.03)**2):                
-                
-                # Extracting character ROI.
-                roi = image[y:y+h, x:x+w]
+        for i in range(1, num_labels):
+            x, y, w, h, area = stats[i]
 
-                # Additional check for sufficient ink.
-                if np.mean(roi) > 10:  # At least some dark pixels
+            if (h >= min_height and h <= max_height and 
+                w/h >= aspect_ratio_range[0] and w/h <= aspect_ratio_range[1]):
+
+                component = (labels == i).astype("uint8") * 255
+                roi = component[y:y+h, x:x+w]
+
+                if np.mean(roi) > 15:
                     character_boxes.append((x, y, w, h, roi))
-                
+
+        character_boxes = self.merge_character_boxes(character_boxes)
+
         return character_boxes
     
+    def merge_character_boxes(self, boxes, x_threshold=0.2, y_threshold=0.5):
+        '''
+        Merging boxes that are close horizontally or vertically.
+        For exmaple tonos and letters that look like two letters combined.
+        '''
+        if not boxes:
+            return []
+        
+        boxes = sorted(boxes, key=lambda b: (b[1], b[0]))
+
+        merged = []
+        current = list(boxes[0])
+
+        for box in boxes[1:]:
+            x, y, w, h, roi = box
+            curr_x, curr_y, curr_w, curr_h, curr_roi = current
+        
+            # Overlap and distance metrics.
+            x_dist = abs(x - (curr_x + curr_w))
+            y_dist = abs(y - (curr_y + curr_h))
+            avg_height = (h + curr_h) / 2
+            
+            # Checking if boxes should be merged.
+            if (x_dist < avg_height * x_threshold and 
+                y_dist < avg_height * y_threshold):
+                
+                # Merging the boxes.
+                new_x = min(x, curr_x)
+                new_y = min(y, curr_y)
+                new_w = max(x + w, curr_x + curr_w) - new_x
+                new_h = max(y + h, curr_y + curr_h) - new_y
+                
+                # Creating the new ROI.
+                new_roi = np.zeros((new_h, new_w), dtype=np.uint8)
+                new_roi[curr_y-new_y:curr_y-new_y+curr_h, 
+                    curr_x-new_x:curr_x-new_x+curr_w] = curr_roi
+                new_roi[y-new_y:y-new_y+h, x-new_x:x-new_x+w] = roi
+                
+                current = [new_x, new_y, new_w, new_h, new_roi]
+            else:
+                merged.append(tuple(current))
+                current = list(box)
+        
+        merged.append(tuple(current))
+
+        return merged
+
     def recognize_character(self, char_image):
         """
         Recognizing a single character.
@@ -336,7 +395,7 @@ class GreekTextRecognizer:
         """
         processed_char = self.preprocess_character(char_image)
 
-        char_pil = Image.fromarray(char_image).convert('L')
+        char_pil = Image.fromarray(processed_char).convert('L')
         char_tensor = self.transform(char_pil).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
