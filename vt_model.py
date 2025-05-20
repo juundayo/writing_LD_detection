@@ -20,12 +20,12 @@ import data_loading as dl
 
 # ----------------------------------------------------------------------------#
 
-EPOCHS = 1000
-PATIENCE = 15
+EPOCHS = 3000
+PATIENCE = 3000
 BATCH_SIZE = 16
 TRAIN = True
-SAVE_PATH = "/home/ml3/Desktop/Thesis/rs1_tt2.pth"
-LOAD_PATH = "/home/ml3/Desktop/Thesis/MODELOTYPA.pth"
+SAVE_PATH = "/home/ml3/Desktop/Thesis/rs1000_tt2_v1.pth"
+LOAD_PATH = "/home/ml3/Desktop/Thesis/rs10_tt2_v2.pth"
 
 # ----------------------------------------------------------------------------#
 
@@ -72,12 +72,10 @@ class BasicBlock(nn.Module):
 
         self.use_se = use_se
 
-        # Convolution 1.
         self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, 
                                padding=1, bias=False)
         self.bn1   = nn.BatchNorm2d(planes)
 
-        # Convolution 2.
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, 
                                padding=1, bias=False)
         self.bn2   = nn.BatchNorm2d(planes)
@@ -121,11 +119,11 @@ class OCR(nn.Module):
         self.relu  = nn.ReLU(inplace=True)
 
         # Residual stages.
-        self.layer1 = self._make_layer(64,  64,  blocks=2, stride=1, 
+        self.layer1 = self._make_layer(64, 64, blocks=2, stride=1, 
                                        use_se=True)
         self.layer2 = self._make_layer(64, 128, blocks=2, stride=2, 
                                        use_se=True)
-        self.layer3 = self._make_layer(128,256, blocks=2, stride=2, 
+        self.layer3 = self._make_layer(128, 256, blocks=2, stride=2, 
                                        use_se=True)
 
         # Self-attention on the feature map.
@@ -134,7 +132,7 @@ class OCR(nn.Module):
         # Final convolution.
         self.layer4 = self._make_layer(256,512, blocks=2, stride=2, use_se=True)
 
-        # Final classification.
+        # Classification.
         self.global_pool = nn.AdaptiveAvgPool2d((1,1))
         self.fc = nn.Linear(512, num_classes)
 
@@ -150,20 +148,20 @@ class OCR(nn.Module):
 
     def forward(self, x):
         # [B,1,45,80] -> conv/bn/relu
-        x = self.relu(self.bn1(self.conv1(x))) # -> [B,64, ~23,40]
-        x = self.layer1(x)                     # -> [B,64,23,40]
-        x = self.layer2(x)                     # -> [B,128,11,20]
-        x = self.layer3(x)                     # -> [B,256, 6,10]
+        x = self.relu(self.bn1(self.conv1(x)))  # -> [B,64, ~23,40]
+        x = self.layer1(x)                      # -> [B,64,23,40]
+        x = self.layer2(x)                      # -> [B,128,11,20]
+        x = self.layer3(x)                      # -> [B,256, 6,10]
 
-        b, c, h, w = x.size()
-        x_flat = x.view(b, c, h*w).permute(2, 0, 1) # -> [h*w, B, C]
+        batch, neurons, h, w = x.size()
+        x_flat = x.view(batch, neurons, h*w).permute(2, 0, 1) # -> [h*w, B, C]
         attn_out, _ = self.attention(x_flat, x_flat, x_flat)
-        attn_out = attn_out.permute(1,2,0).view(b, c, h, w)
+        attn_out = attn_out.permute(1,2,0).view(batch, neurons, h, w)
 
-        x = x + attn_out # Residual connection.
-        x = self.layer4(x)                   # -> [B,512, 3, 5]
-        x = self.global_pool(x).view(b, -1)  # -> [B,512]
-        x = self.fc(x)                       # -> [B,num_classes]
+        x = x + attn_out                        # Residual connection.
+        x = self.layer4(x)                      # -> [B,512, 3, 5]
+        x = self.global_pool(x).view(batch, -1) # -> [B,512]
+        x = self.fc(x)                          # -> [B,num_classes]
         return x
     
 # ----------------------------------------------------------------------------#
@@ -172,7 +170,7 @@ class OCR(nn.Module):
 Using more augmentations for better training and test performance.
 We have already applied random rotations and random contrast to 2.500
 images, and now we take these images and add more small augmentations 
-with a 40% probability. Specifically, we use:
+with a 50% probability. Specifically, we use:
     → Random affine.
     → Random perspective.
     → Gaussian blur.
@@ -194,7 +192,7 @@ class DynamicAugmentations:
     def __call__(self, img):
         # 50% chance per augmentation.
         for aug in self.augmentations:
-            if random.random() < 0.4:  
+            if random.random() < 0.5:  
                 img = aug(img)
         return img
 
