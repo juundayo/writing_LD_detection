@@ -14,6 +14,7 @@ import numpy as np
 import seaborn as sns
 from tqdm import tqdm
 import time
+import random
 
 import data_loading as dl
 
@@ -23,7 +24,7 @@ EPOCHS = 1000
 PATIENCE = 15
 BATCH_SIZE = 16
 TRAIN = True
-SAVE_PATH = "/home/ml3/Desktop/Thesis/MODELOTYPA2.pth"
+SAVE_PATH = "/home/ml3/Desktop/Thesis/rs1_tt2.pth"
 LOAD_PATH = "/home/ml3/Desktop/Thesis/MODELOTYPA.pth"
 
 # ----------------------------------------------------------------------------#
@@ -39,34 +40,164 @@ and the lines themselves, opposed to the white spaces between them.
 
 # ----------------------------------------------------------------------------#
 
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+
+        self.fc = nn.Sequential(
+            nn.Linear(channels, channels // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channels // reduction, channels, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+
+        # Squeeze.
+        y = self.avg_pool(x).view(b, c)
+
+        # Excitation.
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y.expand_as(x)
+    
+# ----------------------------------------------------------------------------#
+
+class BasicBlock(nn.Module):
+    expansion = 1
+    def __init__(self, in_planes, planes, stride=1, use_se=False):
+        super().__init__()
+
+        self.use_se = use_se
+
+        # Convolution 1.
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, 
+                               padding=1, bias=False)
+        self.bn1   = nn.BatchNorm2d(planes)
+
+        # Convolution 2.
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, 
+                               padding=1, bias=False)
+        self.bn2   = nn.BatchNorm2d(planes)
+        self.relu  = nn.ReLU(inplace=True)
+
+        if stride != 1 or in_planes != planes:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(in_planes, planes, kernel_size=1, stride=stride, 
+                          bias=False),
+                nn.BatchNorm2d(planes)
+            )
+        else:
+            self.downsample = None
+        if use_se:
+            self.se = SEBlock(planes)
+
+    def forward(self, x):
+        identity = x
+
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+
+        if self.use_se:
+            out = self.se(out)
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        return self.relu(out)
+    
+# ----------------------------------------------------------------------------#
+
 class OCR(nn.Module):
     def __init__(self, num_classes):
         super(OCR, self).__init__()
         
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1)
-        self.maxpool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.conv2 = nn.Conv2d(32, 32, kernel_size=3)
+        # Initial convolution.
+        self.conv1 = nn.Conv2d(1, 64, kernel_size=3, stride=2, 
+                               padding=1, bias=False)
+        self.bn1   = nn.BatchNorm2d(64)
+        self.relu  = nn.ReLU(inplace=True)
 
-        self.fc1 = nn.Linear(32*6*6, 512)
-        self.dropout = nn.Dropout(0.5)
-        self.fc2 = nn.Linear(512, 256)
-        self.fc3 = nn.Linear(256, num_classes)
+        # Residual stages.
+        self.layer1 = self._make_layer(64,  64,  blocks=2, stride=1, 
+                                       use_se=True)
+        self.layer2 = self._make_layer(64, 128, blocks=2, stride=2, 
+                                       use_se=True)
+        self.layer3 = self._make_layer(128,256, blocks=2, stride=2, 
+                                       use_se=True)
+
+        # Self-attention on the feature map.
+        self.attention = nn.MultiheadAttention(embed_dim=256, num_heads=8)
+
+        # Final convolution.
+        self.layer4 = self._make_layer(256,512, blocks=2, stride=2, use_se=True)
+
+        # Final classification.
+        self.global_pool = nn.AdaptiveAvgPool2d((1,1))
+        self.fc = nn.Linear(512, num_classes)
+
+    def _make_layer(self, in_planes, planes, blocks, stride, use_se):
+        layers = []
+        layers.append(BasicBlock(in_planes, planes, stride=stride,
+                                 use_se=use_se))
+        
+        for _ in range(1, blocks):
+            layers.append(BasicBlock(planes, planes, stride=1, 
+                                     use_se=use_se))
+        return nn.Sequential(*layers)
 
     def forward(self, x):
-        x = self.maxpool(F.relu(self.conv1(x)))
-        x = self.maxpool(F.relu(self.conv2(x)))
+        # [B,1,45,80] -> conv/bn/relu
+        x = self.relu(self.bn1(self.conv1(x))) # -> [B,64, ~23,40]
+        x = self.layer1(x)                     # -> [B,64,23,40]
+        x = self.layer2(x)                     # -> [B,128,11,20]
+        x = self.layer3(x)                     # -> [B,256, 6,10]
 
-        x = torch.flatten(x, 1)
-        
-        x = F.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = F.relu(self.fc2(x))
-        x = self.dropout(x)
+        b, c, h, w = x.size()
+        x_flat = x.view(b, c, h*w).permute(2, 0, 1) # -> [h*w, B, C]
+        attn_out, _ = self.attention(x_flat, x_flat, x_flat)
+        attn_out = attn_out.permute(1,2,0).view(b, c, h, w)
 
-        x = self.fc3(x)
-
+        x = x + attn_out # Residual connection.
+        x = self.layer4(x)                   # -> [B,512, 3, 5]
+        x = self.global_pool(x).view(b, -1)  # -> [B,512]
+        x = self.fc(x)                       # -> [B,num_classes]
         return x
     
+# ----------------------------------------------------------------------------#
+
+'''
+Using more augmentations for better training and test performance.
+We have already applied random rotations and random contrast to 2.500
+images, and now we take these images and add more small augmentations 
+with a 40% probability. Specifically, we use:
+    → Random affine.
+    → Random perspective.
+    → Gaussian blur.
+    → Color jitter.
+'''
+class DynamicAugmentations:
+    def __init__(self):
+        self.augmentations = [
+            transforms.RandomAffine(degrees=7, translate=(0.05, 0.05), 
+                                    scale=(0.95, 1.05,), shear=5),
+            transforms.RandomPerspective(0.3, p=0.4),
+            transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.0)),
+            transforms.RandomApply([
+                transforms.ColorJitter(contrast=(0.8,1.2)),
+                transforms.Lambda(lambda x: x + torch.randn_like(x)*0.03)
+            ], p=0.3)
+        ]
+
+    def __call__(self, img):
+        # 50% chance per augmentation.
+        for aug in self.augmentations:
+            if random.random() < 0.4:  
+                img = aug(img)
+        return img
+
 # ----------------------------------------------------------------------------#
 
 def evaluate_model(model, test_loader, device):
@@ -128,6 +259,10 @@ def train_model():
         for images, labels in train_loader:
             images, labels = images.to(device), labels.to(device)
             
+            # Adding dynamic augmentations to images (0.5 chance).
+            aug = DynamicAugmentations()
+            images = torch.stack([aug(img) for img in images])
+
             optimizer.zero_grad()
             outputs = model(images)
             loss = criterion(outputs, labels)
@@ -204,7 +339,7 @@ if __name__ == "__main__":
     ''' Loading data through the data_loading.py file.'''
     # Image transform.
     data_transforms = transforms.Compose([
-        transforms.Resize((32, 32)),
+        transforms.Resize((512, 64)),
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5])
     ])
