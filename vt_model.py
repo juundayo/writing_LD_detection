@@ -20,12 +20,14 @@ import data_loading as dl
 
 # ----------------------------------------------------------------------------#
 
-EPOCHS = 3000
-PATIENCE = 3000
+EPOCHS = 1000
+PATIENCE = 1000
 BATCH_SIZE = 16
 TRAIN = True
-SAVE_PATH = "/home/ml3/Desktop/Thesis/rs1000_tt2_v1.pth"
-LOAD_PATH = "/home/ml3/Desktop/Thesis/rs10_tt2_v2.pth"
+SAVE_PATH = "/home/ml3/Desktop/Thesis/rs1_tt2_v2.pth"
+LOAD_PATH = "/home/ml3/Desktop/Thesis/rs1000_tt2_v1.pth"
+IMG_HEIGHT = 512
+IMG_WIDTH = 78
 
 # ----------------------------------------------------------------------------#
 
@@ -129,7 +131,7 @@ class OCR(nn.Module):
         # Self-attention on the feature map.
         self.attention = nn.MultiheadAttention(embed_dim=256, num_heads=8)
 
-        # Final convolution.
+        # Final convolytion.
         self.layer4 = self._make_layer(256,512, blocks=2, stride=2, use_se=True)
 
         # Classification.
@@ -332,12 +334,56 @@ def plot_confusion_matrix(model, test_loader, device, class_names):
 
 # ----------------------------------------------------------------------------#
 
+def imshow(img_tensor):
+    """Converts normalized image tensor to numpy image and denormalizes."""
+    img = img_tensor.cpu().numpy().squeeze()
+    img = img * 0.5 + 0.5
+    return img
+
+def plot_predictions(model, test_loader, class_names, device, num_figures=10, 
+                     img_per_fig=20):
+    model.eval()
+    total_images = num_figures * img_per_fig
+    shown = 0
+
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            _, preds = torch.max(outputs, 1)
+
+            for i in range(images.size(0)):
+                if shown >= total_images:
+                    return
+                
+                fig_idx = shown // img_per_fig
+                subplot_idx = shown % img_per_fig
+
+                if subplot_idx == 0:
+                    fig, axes = plt.subplots(4, 5, figsize=(12, 10))
+                    axes = axes.flatten()
+                    fig.suptitle(f'Predictions: Batch {fig_idx + 1}',
+                                 fontsize = 16)
+                
+                ax = axes[subplot_idx]
+                ax.imshow(imshow(images[i]), cmap='gray')
+                ax.set_title(f"True: {class_names[labels[i]]}\nPred: {class_names[preds[i]]}", fontsize=10)
+                ax.axis('off')
+
+                shown += 1
+
+                if shown % img_per_fig == 0:
+                    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+                    plt.show()
+                    
+# ----------------------------------------------------------------------------#
+
 if __name__ == "__main__":
 
     ''' Loading data through the data_loading.py file.'''
     # Image transform.
     data_transforms = transforms.Compose([
-        transforms.Resize((512, 64)),
+        transforms.Resize((IMG_HEIGHT, IMG_WIDTH)),
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5])
     ])
@@ -367,6 +413,7 @@ if __name__ == "__main__":
 
     # Displaying a confusion matrix.
     plot_confusion_matrix(model, test_loader, device, full_dataset.classes)
+    plot_predictions(model, test_loader, full_dataset.classes, device)
 
 # ----------------------------------------------------------------------------#
 
