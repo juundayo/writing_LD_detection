@@ -6,6 +6,7 @@ import torch
 import cv2
 import matplotlib.pyplot as plt
 from torchvision import transforms
+from skimage.transform import (hough_line, hough_line_peaks)
 from PIL import Image, ImageOps
 import ckwrap
 from skimage import io
@@ -44,6 +45,15 @@ class GreekTextRecognizer:
         # Loading edited versions of the input image. 
         self.img_lines = self.input_with_lines(IMG_PATH)
         self.img_no_lines = self.input_without_lines(IMG_PATH)
+
+        # Calculating the coordinates of each line of the notebook.
+        self.line_coords = self.find_line_coordinates(self.img_no_lines)
+
+        # Detects space boxes for characters.
+        self.spaces = self.detect_spaces(self.img_no_lines, self.line_coords)
+
+        # The space between the lines.
+        self.line_space = self.line_distance(self.img_lines)
         
         # Transform applied to each generated cropped image.
         self.transform = transforms.Compose([
@@ -109,7 +119,7 @@ class GreekTextRecognizer:
         plt.imshow(image, cmap='gray')
         plt.title("Thresholded Binary Image")
         plt.axis('off')
-        plt.show()
+        #plt.show()
 
         return image
     
@@ -131,28 +141,24 @@ class GreekTextRecognizer:
         plt.imshow(binary, cmap='gray')
         plt.title("Thresholded Binary Image")
         plt.axis('off')
-        plt.show()
+        #plt.show()
 
         return binary
 
-    def black_and_white(self, a):
+    def black_and_white(self, image):
         """
         Converts grayscale image to strict black and white
         using a threshold of 200.
         """
-        m = a.copy()
-        for i in range(len(m)):
-            for j in range(len(m[0])):
-                if m[i][j] > 200:
-                    m[i][j] = 255  # Background.
-                else:
-                    m[i][j] = 0    # Letter.
-        return m
+        threshold = 200
+        binary_image = np.zeros_like(image)
+        binary_image[image > threshold] = 255
+        return binary_image
     
     def find_line_coordinates(self, logo):
         """
-        Detects lines of text in the image and returns their
-        bounding coordinates.
+        Detects lines of text in the image and 
+        returns their bounding coordinates.
         """
         coords = []
         xycoords = []
@@ -206,7 +212,82 @@ class GreekTextRecognizer:
                 coords.append(coo)
         
         print("Line Coordinates Found:", xycoords)
+
+        color_logo = cv2.cvtColor(logo, cv2.COLOR_GRAY2BGR)
+
+        for i, (x1, x2, y1, y2) in enumerate(xycoords):
+            cv2.rectangle(color_logo, (y1, x1), (y2, x2), (0, 255, 0), 1)
+            label = f"Line {i+1}: [{y1},{x1}]→[{y2},{x2}]"
+            cv2.putText(color_logo, label, (y1, x1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+
+        plt.figure(figsize=(10, 8))
+        plt.imshow(cv2.cvtColor(color_logo, cv2.COLOR_BGR2RGB))
+        plt.title("Detected Notebook Lines with Bounding Boxes")
+        plt.axis('off')
+        #plt.show()
+
         return xycoords
+    
+    def line_distance(self, image, show=True, save=False):
+        '''
+        Dynamically detecting the lines of the input image using Hough
+        transform to calculating the distance between each line. 
+        '''
+        inverted = ~image
+        tested_angles = np.linspace(-np.pi / 2, np.pi / 2, 180)
+        hspace, theta, dist = hough_line(inverted, tested_angles)
+        h, q, d = hough_line_peaks(hspace, theta, dist)
+
+        angle_list = []
+        dist_list = []
+
+        fig, axes = plt.subplots(1, 3, figsize=(15, 6))
+        ax = axes.ravel()
+
+        ax[0].imshow(inverted, cmap='gray')
+        ax[0].set_title('Input image')
+        ax[0].set_axis_off()
+
+        ax[1].imshow(np.log(1 + hspace),
+             extent=[np.rad2deg(theta[-1]), np.rad2deg(theta[0]), 
+                     dist[-1], dist[0]], cmap='gray', aspect=1/1.5)
+        ax[1].set_title('Hough transform')
+        ax[1].set_xlabel('Angles (degrees)')
+        ax[1].set_ylabel('Distance (pixels)')
+        ax[1].axis('image')
+
+        ax[2].imshow(inverted, cmap='gray')
+
+        origin = np.array((0, inverted.shape[1]))
+
+        # Sorting the lines by their distance (y-coordinate).
+        sorted_indices = np.argsort(d)
+        sorted_distances = d[sorted_indices]
+        sorted_angles = q[sorted_indices]
+
+        line_distances = []
+        for i in range(1, len(sorted_distances)):
+            line_distances.append(sorted_distances[i] - sorted_distances[i-1])
+
+        # Calculating the average distance between lines.
+        avg_line_distance = np.mean(line_distances) if line_distances else 0
+
+        for angle, dist in zip(sorted_angles, sorted_distances):
+            angle_list.append(angle)
+            dist_list.append(dist)
+            y0, y1 = (dist - origin * np.cos(angle)) / np.sin(angle)
+            ax[2].plot(origin, (y0, y1), '-r')
+
+        ax[2].set_xlim(origin)
+        ax[2].set_ylim((image.shape[0], 0))
+        ax[2].set_axis_off()
+        ax[2].set_title('Detected lines')
+
+        plt.tight_layout()
+        plt.show()
+
+        print(f"Average distance between lines: {avg_line_distance} pixels")
+        return avg_line_distance
     
     def detect_spaces(self, logo, xycoords):
         """
@@ -246,117 +327,118 @@ class GreekTextRecognizer:
     
     def segment_characters(self, logo, finalXY):
         """
-        Segments individual characters from line segments and stores
-        their x y coordinates in a dictionary fromatted as followed:
-        1: [coordinates], 2:[coordinates], ... , n: [coordinates]
-        where n indicates the 2 lines above and below each character.
-        For example, an input with 3 lines will use 2 keys in the
-        dictionary. 
-
-        After each character coordinate is found, we edit the height
-        boundary of each character so that it extends until the line
-        of the notebook above the character that was found. (We do
-        that to match the way that the model's training dataset was
-        created).
+        Segments individual characters from line segments and
+        saves them as a png that will later be processed by  
+        the clean_and_resize function.
         """
-        col = []
+        all_columns = []
         count = 0
-        
-        for hoe in finalXY:
-            newC = [0] # Starting with leftmost boundary.
-            
-            def flagCalc(i):
-                flag = 1
-                for j in range(len(logo[hoe[0]:hoe[1],hoe[2]:hoe[3]][:,i])):
-                    if logo[hoe[0]:hoe[1],hoe[2]:hoe[3]][:,i][j] < 150:
-                        flag = 0 # Pixel is part of the character (dark).
-                return flag
-            
-            # Find character boundaries. (start, end)
-            for i in range(len(logo[hoe[0]:hoe[1],hoe[2]:hoe[3]][0,:])):
-                try:
-                    if flagCalc(i) < flagCalc(i+1):
-                        newC.append(i+1) 
-                except:
-                    pass
-            
-            newC.append(hoe[3]) # Adds rightmost boundary.
-            col.append(newC) # Saving x coordinates for the line.
-            
-            # Saving each character.
-            for i in range(len(newC)-1):
-                A = self.black_and_white(logo[hoe[0]:hoe[1],hoe[2]:hoe[3]][:,newC[i]:newC[i+1]])
-                A = A.astype(np.uint8)
-                im = Image.fromarray(A)
-                im.save(DUMP+"/"+str(count)+".png")
+        self.char_positions = []
+
+        for top, bottom, left, right in finalXY:
+            region = logo[top:bottom, left:right]
+            width = region.shape[1]
+
+            def is_background_column(i):
+                return all(pixel >= 150 for pixel in region[:, i])
+
+            boundaries = [0]
+            try:
+                boundaries += [i + 1 for i in range(width - 1)
+                            if is_background_column(i) and not is_background_column(i + 1)]
+            except IndexError:
+                pass
+
+            boundaries.append(width)
+            all_columns.append(boundaries)
+
+            for i in range(len(boundaries) - 1):
+                char_region = region[:, boundaries[i]:boundaries[i + 1]]
+                bw_char = self.black_and_white(char_region).astype(np.uint8)
+                Image.fromarray(bw_char).save(f"{DUMP}/{count}.png")
                 count += 1
-        return col
+
+        return all_columns
     
     def clean_and_resize(self, path):
         """
-        Processes character images by removing borders and
-        standardizing size for OCR.
+        Processes character images by removing borders and 
+        standardizing size for OCR. The x border is as tight
+        as possible and the y border extends upwards until
+        a few pixels above the line above the letter to cover
+        tonos cases and to match the data the model was trained on.
         """
-        a = io.imread(path)
+        def has_black_pixels(column_or_row):
+            """Check if the column/row contains any black pixels (0)."""
+            return any(pixel == 0 for pixel in column_or_row)
+        
+        # Loading the letter and finding content boundaries.
+        img_array = io.imread(path)
+        height, width = img_array.shape
 
-        def flagCalc(i):
-            flag = 0
-            for j in range(len(i)):
-                if i[j] == 0:
-                    flag = 1
-            return flag
-        
-        # Find content boundaries.
-        y1 = 0
-        y2 = a.shape[0]
-        x1 = 0
-        x2 = a.shape[1]
-        
-        for i in range(len(a)-1):
-            if flagCalc(a[i]) < flagCalc(a[i+1]):
-                y2 = a.shape[0]
-                if (i+1) < y2:
-                    y1 = i+1
-            elif flagCalc(a[i]) > flagCalc(a[i+1]):
-                if (i-1) > y1:
-                    y2 = i-1
-        
-        for i in range(len(a[0,:])-1):
-            if flagCalc(a[:,i]) < flagCalc(a[:,i+1]):
-                if (i+1) < x2:
-                    x1 = i+1
-            elif flagCalc(a[:,i]) > flagCalc(a[:,i+1]):
-                if (i-1) > x1:
-                    x2 = i-1
-        
-        # Crop and save
-        im = Image.fromarray(a[y1:y2,x1:x2])
-        im.save(path)
-        
-        # Resize with padding
-        a = io.imread(path)
-        if a.shape[0] > a.shape[1]:
-            f = 28/a.shape[0]
-        else:
-            f = 28/a.shape[1]
-        
-        b = Image.fromarray(a, mode='L').resize((
-            int(a.shape[1]*f), int(a.shape[0]*f)), Image.BICUBIC)
-        
-        c = Image.fromarray(np.full((32, 32), 255).astype('uint8'), mode='L')
+        # Getting the character's position in the original image.
+        # The filename contains the character's index in the sequence.
+        char_index = int(os.path.basename(path).split('.')[0])
 
-        img_w, img_h = b.size
-        bg_w, bg_h = c.size
-        offset = ((bg_w - img_w) // 2, (bg_h - img_h) // 2)
-
-        c.paste(b, offset)
-        c.save(path)
+        # Finding which line this character belongs to.
+        current_line = None
+        for line_idx, line in enumerate(self.line_coords):
+            # Check if character is between line start and end.
+            if line[0] <= char_index <= line[1]:
+                current_line = line
+                break
         
-        # Final thresholding
-        a_bw = io.imread(path)
-        a_bw = self.black_and_white(a_bw)
+        # Finding vertical boundaries (y1, y2).
+        y1, y2 = 0, height
 
-        Image.fromarray(a_bw).save(path)
+        # Finding the upper boundary (go up to the line above).
+        if current_line is not None:
+            # Get y-coordinate of the line above (current_line[2] is ymin of the line).
+            # We'll go up to 5 pixels above the line.
+            y1 = max(0, current_line[2] - 5)  
+
+        # Finding the bottom boundary (bottom of the character).
+        for i in range(height - 1):
+            current_row_has_black = has_black_pixels(img_array[i])
+            next_row_has_black = has_black_pixels(img_array[i + 1])
+            
+            if current_row_has_black and not next_row_has_black:
+                y2 = i
+        
+        # Finding horizontal boundaries (x1, x2).
+        x1, x2 = 0, width
+        for i in range(width - 1):
+            current_col_has_black = has_black_pixels(img_array[:, i])
+            next_col_has_black = has_black_pixels(img_array[:, i + 1])
+            
+            if not current_col_has_black and next_col_has_black:
+                x1 = i + 1
+            elif current_col_has_black and not next_col_has_black:
+                x2 = i
+        
+        # Cropping the image.
+        cropped_img = Image.fromarray(img_array[y1:y2, x1:x2])
+        cropped_img.save(path)
+        
+        # Resizing with aspect ratio preservation.
+        img_array = io.imread(path)
+        max_dim = max(img_array.shape)
+        scale_factor = 28 / max_dim
+        new_size = (int(img_array.shape[1] * scale_factor), 
+                    int(img_array.shape[0] * scale_factor))
+        
+        resized_img = Image.fromarray(img_array, mode='L').resize(
+            new_size, Image.BICUBIC)
+        
+        # Centering on 32x32 white background.
+        background = Image.new('L', (32, 32), color=255)
+        offset = ((32 - resized_img.width) // 2, 
+                (32 - resized_img.height) // 2)
+        background.paste(resized_img, offset)
+        
+        # Applying final thresholding and saving.
+        final_img = self.black_and_white(np.array(background))
+        Image.fromarray(final_img).save(path)
     
     def recognize_character(self, char_image):
         """
@@ -463,47 +545,33 @@ class GreekTextRecognizer:
     def recognize_text(self):
         """
         Main OCR pipeline that processes an image file and
-        returns the recognized text with statistics.
+        returns the recognized text with statistics. The
+        input image loading, notebook line and space finding
+        is initialized in __init__.
         """
-        # Processes the input image with no lines
-        # and detects the line coordinates.
-        logo = self.input_without_lines(IMG_PATH)
-        xycoords = self.find_line_coordinates(logo)
-
-        # Detects spaces.
-        spaces = self.detect_spaces(logo, xycoords)
-        
         # Segments characters.
-        self.segment_characters(logo, xycoords)
+        self.segment_characters(self.img_no_lines, self.line_coords)
         print("Character segmentation completed.")
         
         # Processes each character.
-        for mm in os.listdir(DUMP+"/"):
-            self.clean_and_resize(DUMP+"/"+str(mm))
+        for im in os.listdir(DUMP+"/"):
+            self.clean_and_resize(DUMP+"/"+str(im))
         
         # Recognizing each character added to the image folder.
         co = -1
         charPred = []
         confidence_scores = []
         
-        while True:
-            co += 1
-            try:
-                image = Image.open(DUMP+"/"+str(co)+'.png')
-                char_array = np.asarray(image)
-                char, conf = self.recognize_character(char_array)
-                
-                charPred.append(char)
-                confidence_scores.append(conf)
-                # Keeping this commented for now. 
-                #os.remove(DUMP+"/"+str(co)+'.png')
-            except:
-                break
+        char_data = []
+        for i in os.listdir(DUMP+"/"):
+            img_path = os.path.join(DUMP, f"{i}.png")
+            with Image.open(img_path) as image:
+                char, conf = self.recognize_character(np.asarray(image))
+                char_data.append((char, conf))
+            os.remove(img_path)
         
         # Reconstructing the text with dictionary checking.
-        result = self.reconstruct_text(charPred, spaces)
-        
-        return result
+        return self.reconstruct_text(charPred, self.spaces)
 
 # ----------------------------------------------------------------------------#
 
