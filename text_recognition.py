@@ -11,11 +11,12 @@ import ckwrap
 from skimage import io
 from collections import defaultdict
 
-from ocr_model import LetterOCR
+from vt_model import OCR
 from data_loading import class_mapping
 
 # ----------------------------------------------------------------------------#
 
+MODEL_PATH = "/home/ml3/Desktop/Thesis/rs1_tt2_v2.pth"
 IMG_PATH = "/home/ml3/Desktop/Thesis/.venv/model_test.jpg"
 DUMP = "/home/ml3/Desktop/Thesis/LetterDump"
 THRESHOLD = 100
@@ -24,32 +25,38 @@ THRESHOLD = 100
 
 class GreekTextRecognizer:
     def __init__(self, model_path, device):
+        # Creating the generated cropped image folder. 
+        os.makedirs(DUMP, exist_ok=True)
+
+        # Loading the model.
         self.device = device
         self.model = self.load_model(model_path, len(class_mapping))
-        os.makedirs(DUMP, exist_ok=True)
+
+        # Loading the dictionary.
+        self.greek_dictionary = self.load_greek_dictionary(
+            '/home/ml3/Desktop/Thesis/.venv/Data/filtered_dictionary.dic'
+        ) 
 
         # Inverse mapping from index to class name.
         self.classes = sorted(class_mapping.values())
         self.idx_to_class = {i: cls for i, cls in enumerate(self.classes)}
 
-        self.greek_dictionary = self.load_greek_dictionary(
-            '/home/ml3/Desktop/Thesis/.venv/Data/filtered_dictionary.dic'
-        ) 
+        # Loading edited versions of the input image. 
+        self.img_lines = self.input_with_lines(IMG_PATH)
+        self.img_no_lines = self.input_without_lines(IMG_PATH)
         
+        # Transform applied to each generated cropped image.
         self.transform = transforms.Compose([
-            transforms.Resize((45, 80)),
+            transforms.Resize((516, 78)),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5])
         ])
 
-        self.HYPHEN_CLASS = 'hyphen'
-
     def load_model(self, model_path, num_classes):
-        model = LetterOCR(num_classes=num_classes)
-        model.load_state_dict(torch.load(model_path, map_location=self.device))
+        model = OCR(num_classes=num_classes).to(self.device)
+        model.load_state_dict(torch.load(MODEL_PATH))
         model.eval()
-        model.to(self.device)
-
+   
         print("Loaded the model!")
         return model
     
@@ -72,7 +79,41 @@ class GreekTextRecognizer:
         
         return word
         
-    def process_image(self, IMG_PATH):
+    def input_with_lines(self, IMG_PATH):
+        """
+        Processes the input image through grayscale conversion,
+        adaptive thresholding, and line/character segmentation.
+
+        Returns the original image in a format that is good
+        enough for the model to take as an input after each
+        character has been isolated.
+        """
+        # Image loading and grayscale conversion.
+        image = cv2.imread(IMG_PATH, cv2.IMREAD_GRAYSCALE)
+
+        # Adaptice histogram equalization for contrast.
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        image = cv2.GaussianBlur(image, (3, 3), 0)
+        image = cv2.adaptiveThreshold(
+            image, 255, 
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV, 11, 2 # 11, 2 keeps the notebook lines.
+
+        )
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        image = cv2.morphologyEx(image, cv2.MORPH_CLOSE, kernel)
+        image = 255 - image # Inveting black and white.
+
+        # Show the image
+        plt.imshow(image, cmap='gray')
+        plt.title("Thresholded Binary Image")
+        plt.axis('off')
+        plt.show()
+
+        return image
+    
+    def input_without_lines(self, IMAGE_PATH):
         """
         Processes the input image through grayscale conversion,
         thresholding, and line/character segmentation.
@@ -94,7 +135,6 @@ class GreekTextRecognizer:
 
         return binary
 
-    
     def black_and_white(self, a):
         """
         Converts grayscale image to strict black and white
@@ -104,9 +144,9 @@ class GreekTextRecognizer:
         for i in range(len(m)):
             for j in range(len(m[0])):
                 if m[i][j] > 200:
-                    m[i][j] = 255
+                    m[i][j] = 255  # Background.
                 else:
-                    m[i][j] = 0
+                    m[i][j] = 0    # Letter.
         return m
     
     def find_line_coordinates(self, logo):
@@ -136,13 +176,13 @@ class GreekTextRecognizer:
             coo = []
             flag = 0
             
-            # Check if line contains text
+            # Check if line contains text.
             for c in logo[1:-1,1:-1][i]:
                 if c < 200:
                     flag = 1
             
             if flag == 1:
-                # Find character boundaries
+                # Find character boundaries.
                 for b in range(len(logo[1:-1,1:-1][i])):
                     if logo[1:-1,1:-1][i][b] > 200:
                         try:
@@ -198,7 +238,7 @@ class GreekTextRecognizer:
             if len(nums) == 0:
                 spaces = np.concatenate((spaces, np.array([2])), axis=None)
             else:
-                # Cluster space widths into two groups (small and large spaces)
+                # Cluster space widths into two groups (small and large spaces).
                 km = ckwrap.ckmeans(nums, 2)
                 spaces = np.concatenate((spaces, km.labels, np.array([2])), axis=None)
         
@@ -206,32 +246,42 @@ class GreekTextRecognizer:
     
     def segment_characters(self, logo, finalXY):
         """
-        Segments individual characters from line segments and
-        saves them to disk.
+        Segments individual characters from line segments and stores
+        their x y coordinates in a dictionary fromatted as followed:
+        1: [coordinates], 2:[coordinates], ... , n: [coordinates]
+        where n indicates the 2 lines above and below each character.
+        For example, an input with 3 lines will use 2 keys in the
+        dictionary. 
+
+        After each character coordinate is found, we edit the height
+        boundary of each character so that it extends until the line
+        of the notebook above the character that was found. (We do
+        that to match the way that the model's training dataset was
+        created).
         """
         col = []
         count = 0
         
         for hoe in finalXY:
-            newC = [0]
+            newC = [0] # Starting with leftmost boundary.
             
             def flagCalc(i):
                 flag = 1
                 for j in range(len(logo[hoe[0]:hoe[1],hoe[2]:hoe[3]][:,i])):
                     if logo[hoe[0]:hoe[1],hoe[2]:hoe[3]][:,i][j] < 150:
-                        flag = 0
+                        flag = 0 # Pixel is part of the character (dark).
                 return flag
             
-            # Find character boundaries
+            # Find character boundaries. (start, end)
             for i in range(len(logo[hoe[0]:hoe[1],hoe[2]:hoe[3]][0,:])):
                 try:
                     if flagCalc(i) < flagCalc(i+1):
-                        newC.append(i+1)
+                        newC.append(i+1) 
                 except:
                     pass
             
-            newC.append(hoe[3])
-            col.append(newC)
+            newC.append(hoe[3]) # Adds rightmost boundary.
+            col.append(newC) # Saving x coordinates for the line.
             
             # Saving each character.
             for i in range(len(newC)-1):
@@ -240,7 +290,6 @@ class GreekTextRecognizer:
                 im = Image.fromarray(A)
                 im.save(DUMP+"/"+str(count)+".png")
                 count += 1
-        
         return col
     
     def clean_and_resize(self, path):
@@ -249,15 +298,7 @@ class GreekTextRecognizer:
         standardizing size for OCR.
         """
         a = io.imread(path)
-        
-        # Threshold image
-        for i in range(len(a)):
-            for j in range(len(a[0])):
-                if a[i][j] > 200:
-                    a[i][j] = 255
-                else:
-                    a[i][j] = 0
-        
+
         def flagCalc(i):
             flag = 0
             for j in range(len(i)):
@@ -265,7 +306,7 @@ class GreekTextRecognizer:
                     flag = 1
             return flag
         
-        # Find content boundaries
+        # Find content boundaries.
         y1 = 0
         y2 = a.shape[0]
         x1 = 0
@@ -315,18 +356,7 @@ class GreekTextRecognizer:
         a_bw = io.imread(path)
         a_bw = self.black_and_white(a_bw)
 
-    
-    def add_margin(self, pil_img, top, right, bottom, left, color):
-        """Adds margins to an image."""
-        width, height = pil_img.size
-
-        new_width = width + right + left
-        new_height = height + top + bottom
-
-        result = Image.new(pil_img.mode, (new_width, new_height), color)
-        result.paste(pil_img, (left, top))
-
-        return result
+        Image.fromarray(a_bw).save(path)
     
     def recognize_character(self, char_image):
         """
@@ -334,8 +364,33 @@ class GreekTextRecognizer:
         Returns the character itself and the 
         respective confidence of the prediction.
         """
+        # Original image.
+        plt.figure(figsize=(10, 4))
+        plt.subplot(1, 2, 1)
+        plt.imshow(char_image, cmap='gray')
+        plt.title("Original Character")
+        plt.axis('off')
+
+        # Transform and prepare for model
         char_pil = Image.fromarray(char_image).convert('L')
-        char_tensor = self.transform(char_pil).unsqueeze(0).to(self.device)
+        transformed_img = self.transform(char_pil)
+        
+        # Prepare transformed image for display
+        img_to_show = transformed_img.squeeze().cpu().numpy()
+        img_to_show = (img_to_show * 0.5) + 0.5  # Undo normalization
+        img_to_show = np.clip(img_to_show, 0, 1)
+        
+        # Transformed image
+        plt.subplot(1, 2, 2)
+        plt.imshow(img_to_show, cmap='gray')
+        plt.title("Transformed (Model Input)")
+        plt.axis('off')
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Continue with recognition
+        char_tensor = transformed_img.unsqueeze(0).to(self.device)
         
         with torch.no_grad():
             outputs = self.model(char_tensor)
@@ -410,22 +465,23 @@ class GreekTextRecognizer:
         Main OCR pipeline that processes an image file and
         returns the recognized text with statistics.
         """
-        # Process image and detect lines
-        logo = self.process_image(IMG_PATH)
+        # Processes the input image with no lines
+        # and detects the line coordinates.
+        logo = self.input_without_lines(IMG_PATH)
         xycoords = self.find_line_coordinates(logo)
-        print("Line coords:", xycoords)
 
+        # Detects spaces.
         spaces = self.detect_spaces(logo, xycoords)
         
-        # Segment characters.
+        # Segments characters.
         self.segment_characters(logo, xycoords)
         print("Character segmentation completed.")
         
-        # Process each character.
+        # Processes each character.
         for mm in os.listdir(DUMP+"/"):
             self.clean_and_resize(DUMP+"/"+str(mm))
         
-        # Recognize characters.
+        # Recognizing each character added to the image folder.
         co = -1
         charPred = []
         confidence_scores = []
@@ -439,11 +495,12 @@ class GreekTextRecognizer:
                 
                 charPred.append(char)
                 confidence_scores.append(conf)
+                # Keeping this commented for now. 
                 #os.remove(DUMP+"/"+str(co)+'.png')
             except:
                 break
         
-        # Reconstruct text with dictionary checking
+        # Reconstructing the text with dictionary checking.
         result = self.reconstruct_text(charPred, spaces)
         
         return result
@@ -451,7 +508,7 @@ class GreekTextRecognizer:
 # ----------------------------------------------------------------------------#
 
 if __name__ == '__main__':    
-    recognizer = GreekTextRecognizer("ocr_model.pth", "cuda")
+    recognizer = GreekTextRecognizer(MODEL_PATH, "cuda")
     result = recognizer.recognize_text()
     
     print("\nFinal Results:")
