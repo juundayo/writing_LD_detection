@@ -20,7 +20,8 @@ from data_loading import class_mapping
 MODEL_PATH = "/home/ml3/Desktop/Thesis/rs1_tt2_v2.pth"
 IMG_PATH = "/home/ml3/Desktop/Thesis/.venv/model_test.jpg"
 DUMP = "/home/ml3/Desktop/Thesis/LetterDump"
-THRESHOLD = 100
+IMG_HEIGHT = 512
+IMG_WIDTH = 78
 
 # ----------------------------------------------------------------------------#
 
@@ -47,7 +48,7 @@ class GreekTextRecognizer:
         self.img_no_lines = self.input_without_lines(IMG_PATH)
 
         # The space between the lines.
-        self.line_height = self.line_distance(self.img_lines)
+        self.line_height, self.line_coords = self.line_distance(self.img_lines)
 
         # Calculating the coordinates of blocks of text recognized.
         self.block_coords = self.find_blocks(self.img_no_lines)
@@ -57,7 +58,7 @@ class GreekTextRecognizer:
         
         # Transform applied to each generated cropped image.
         self.transform = transforms.Compose([
-            transforms.Resize((516, 78)),
+            transforms.Resize((IMG_HEIGHT, IMG_WIDTH)),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5])
         ])
@@ -134,7 +135,7 @@ class GreekTextRecognizer:
         img_array = np.array(img_gray)
         
         # Thresholding.
-        threshold = THRESHOLD
+        threshold = 100
         binary = np.where(img_array <= threshold, 0, 255).astype(np.uint8)
 
         # Show the image
@@ -159,9 +160,10 @@ class GreekTextRecognizer:
         """
         Detects lines of text in the image and returns
         their bounding coordinates. We use a threshold
-        of width >= 10 to remove noise.
+        of width >= 5 to remove noise. (Dots, etc.)
         """
         line_boundaries = []
+        MIN_BLOCK_WIDTH = 5
         
         def calculate_line_boundary(coords_list):
             """
@@ -177,8 +179,6 @@ class GreekTextRecognizer:
             # Adding a small padding to the boundaries.
             padding = 3
             return [xmin, xmax + padding, max(0, ymin - padding), ymax + padding]
-        
-        MIN_BLOCK_WIDTH = 5
 
         # Check 1 -> Detecting all potential character transitions.
         transitions = []
@@ -230,7 +230,7 @@ class GreekTextRecognizer:
                 if block_width >= MIN_BLOCK_WIDTH:
                     line_boundaries.append(boundary)
                 
-        print("Line Coordinates Found:", line_boundaries)
+        print("Line block coordinates:", line_boundaries)
 
         color_logo = cv2.cvtColor(logo, cv2.COLOR_GRAY2BGR)
 
@@ -247,26 +247,25 @@ class GreekTextRecognizer:
 
         return line_boundaries
     
-    def line_distance(self, image, show=True, save=False):
+    def line_distance(self, image, show=True):
         '''
         Dynamically detecting the lines of the input image using Hough
         transform to calculating the distance between each line. 
         '''
+        angle_list = []
+        dist_list = []
+        line_coords = []
+
         inverted = ~image
         tested_angles = np.linspace(-np.pi / 2, np.pi / 2, 180)
         hspace, theta, dist = hough_line(inverted, tested_angles)
-        h, q, d = hough_line_peaks(hspace, theta, dist)
+        _, q, d = hough_line_peaks(hspace, theta, dist)
 
-        angle_list = []
-        dist_list = []
-
-        fig, axes = plt.subplots(1, 3, figsize=(15, 6))
+        _, axes = plt.subplots(1, 3, figsize=(15, 6))
         ax = axes.ravel()
-
         ax[0].imshow(inverted, cmap='gray')
         ax[0].set_title('Input image')
         ax[0].set_axis_off()
-
         ax[1].imshow(np.log(1 + hspace),
              extent=[np.rad2deg(theta[-1]), np.rad2deg(theta[0]), 
                      dist[-1], dist[0]], cmap='gray', aspect=1/1.5)
@@ -274,12 +273,10 @@ class GreekTextRecognizer:
         ax[1].set_xlabel('Angles (degrees)')
         ax[1].set_ylabel('Distance (pixels)')
         ax[1].axis('image')
-
         ax[2].imshow(inverted, cmap='gray')
 
-        origin = np.array((0, inverted.shape[1]))
-
         # Sorting the lines by their distance (y-coordinate).
+        origin = np.array((0, inverted.shape[1]))
         sorted_indices = np.argsort(d)
         sorted_distances = d[sorted_indices]
         sorted_angles = q[sorted_indices]
@@ -296,55 +293,60 @@ class GreekTextRecognizer:
             dist_list.append(dist)
             y0, y1 = (dist - origin * np.cos(angle)) / np.sin(angle)
             ax[2].plot(origin, (y0, y1), '-r')
+            line_coords.append((y0, y1))
 
         ax[2].set_xlim(origin)
         ax[2].set_ylim((image.shape[0], 0))
         ax[2].set_axis_off()
         ax[2].set_title('Detected lines')
-
         plt.tight_layout()
         plt.show()
 
+        # Storing the line coordinates for later use.
+        self.detected_lines = sorted_distances
+
         print(f"Average distance between lines: {avg_line_distance} pixels")
-        return avg_line_distance
+        print(f"Line coordinates:", line_coords)
+        return avg_line_distance, line_coords
     
     def detect_spaces(self, logo, xycoords):
         """
         Uses k-means clustering to detect spaces between words
         based on vertical whitespace columns.
         """
-        spaces = np.array([0])
-        ctr = 0
-        
-        for y in xycoords:
-            sp = []
-            a = self.black_and_white(logo[y[0]:y[1],y[2]:y[3]])
-            
-            # Count consecutive white columns
-            for i in range(len(a[0,:])):
-                f = 0
-                for j in a[:,i]:
-                    if j == 0:
-                        f = 1
-                
-                if f != 1:
-                    ctr += 1
-                if f == 1:
-                    sp.append(ctr)
-                    ctr = 0
-            
-            nums = np.array([jj for jj in sp if jj != 0])
-            
-            if len(nums) == 0:
-                spaces = np.concatenate((spaces, np.array([2])), axis=None)
+        spaces = [0]
+
+        for y_start, y_end, x_start, x_end in xycoords:
+            segment = self.black_and_white(logo[y_start:y_end, x_start:x_end])
+            _, width = segment.shape
+            whitespace_lengths = []
+            white_count = 0
+
+            for col in range(width):
+                column = segment[:, col]
+                if np.any(column == 0):  # Contains a black pixel
+                    if white_count > 0:
+                        whitespace_lengths.append(white_count)
+                        white_count = 0
+                else:
+                    white_count += 1
+
+            if white_count > 0:
+                whitespace_lengths.append(white_count)
+
+            non_zero_spaces = np.array([w for w in whitespace_lengths if w > 0])
+
+            if non_zero_spaces.size == 0:
+                spaces.append(2)
             else:
-                # Cluster space widths into two groups (small and large spaces).
-                km = ckwrap.ckmeans(nums, 2)
-                spaces = np.concatenate((spaces, km.labels, np.array([2])), axis=None)
-        
-        return spaces
+                # Cluster into small/large spaces
+                labels = ckwrap.ckmeans(non_zero_spaces, 2).labels
+                spaces.extend(labels)
+                spaces.append(2)
+
+        return np.array(spaces)
     
-    def segment_characters(self, logo, finalXY):
+    def segment_characters(self, image, finalXY):
         """
         Segments individual characters from line segments and
         saves them as a png that will later be processed by  
@@ -353,10 +355,9 @@ class GreekTextRecognizer:
         all_columns = []
         self.char_positions = []
         MIN_CHAR_WIDTH = 5
-        count = 0
 
-        for top, bottom, left, right in finalXY:
-            region = logo[top:bottom, left:right]
+        for line_idx, (top, bottom, left, right) in enumerate(finalXY):
+            region = image[top:bottom, left:right]
             width = region.shape[1]
 
             def is_background_column(i):
@@ -372,13 +373,15 @@ class GreekTextRecognizer:
             boundaries.append(width)
             all_columns.append(boundaries)
 
+            char_count = 0
             for i in range(len(boundaries) - 1):
                 char_width = boundaries[i+1] - boundaries[i]
                 if char_width >= MIN_CHAR_WIDTH:
                     char_region = region[:, boundaries[i]:boundaries[i + 1]]
                     bw_char = self.black_and_white(char_region).astype(np.uint8)
-                    Image.fromarray(bw_char).save(f"{DUMP}/{count}.png")
-                    count += 1
+                    filename = f"{line_idx}_{char_count}.png"
+                    Image.fromarray(bw_char).save(f"{DUMP}/{filename}")
+                    char_count += 1
 
         return all_columns
     
@@ -397,71 +400,61 @@ class GreekTextRecognizer:
         # Loading the letter and finding content boundaries.
         img_array = io.imread(path)
         height, width = img_array.shape
+        
+        # Getting the line number of the filename. 
+        # IMG Format: lineidx_number.png
+        line_idx = int(os.path.basename(path).split('_')[0])
 
-        # Getting the character's position in the original image.
-        # The filename contains the character's index in the sequence.
-        char_index = int(os.path.basename(path).split('.')[0])
-
-        # Finding which line this character belongs to.
-        current_line = None
-        for line_idx, line in enumerate(self.block_coords):
-            # Check if character is between line start and end.
-            if line[0] <= char_index <= line[1]:
-                current_line = line
+        '''Finding horizontal boundaries (x1, x2).'''
+        # Finding the first and last columns with content.
+        x1, x2 = 0, width
+        for i in range(width):
+            if has_black_pixels(img_array[:, i]):
+                x1 = max(0, i-1)  # Small padding.
+                break
+                
+        for i in range(width-1, -1, -1):
+            if has_black_pixels(img_array[:, i]):
+                x2 = min(width, i+2)  # Small padding.
                 break
         
-        # Finding vertical boundaries (y1, y2).
-        y1, y2 = 0, height
+        '''Y-AXIS WITH NOTEBOOK LINES'''
+        if line_idx < len(self.block_coords):
+            current_line_y = np.mean(self.line_coords[line_idx])
+            padding = int(self.line_height * 0.2)
 
-        # Finding the upper boundary (go up to the line above).
-        if current_line is not None:
-            # Get y-coordinate of the line above (current_line[2] is ymin of the line).
-            # We'll go up to 5 pixels above the line.
-            y1 = max(0, current_line[2] - 5)  
+            # Defaulting to current line position.
+            y1 = max(0, current_line_y - self.line_height - padding)
+            y2 = min(height, current_line_y + self.line_height + padding)
 
-        # Finding the bottom boundary (bottom of the character).
-        for i in range(height - 1):
-            current_row_has_black = has_black_pixels(img_array[i])
-            next_row_has_black = has_black_pixels(img_array[i + 1])
-            
-            if current_row_has_black and not next_row_has_black:
-                y2 = i
-        
-        # Finding horizontal boundaries (x1, x2).
-        x1, x2 = 0, width
-        for i in range(width - 1):
-            current_col_has_black = has_black_pixels(img_array[:, i])
-            next_col_has_black = has_black_pixels(img_array[:, i + 1])
-            
-            if not current_col_has_black and next_col_has_black:
-                x1 = i + 1
-            elif current_col_has_black and not next_col_has_black:
-                x2 = i
-        
+            # Checking if character extends below the current line.
+            bottom_pixels = img_array[int(current_line_y):, x1:x2]
+            if np.any(bottom_pixels < 200):
+                # Finding the line above if it exists.
+                if line_idx > 0:
+                    above_line_y = np.mean(self.line_coords[line_idx-1])
+                    y1 = max(0, above_line_y + padding)
+                else:
+                    # Extra space if first line.
+                    y1 = max(0, current_line_y - 2*self.line_height)  
+
+            # Check if character extends above the current line
+            top_pixels = img_array[:int(current_line_y), x1:x2]
+            if np.any(top_pixels < 200):  # If there are dark pixels above line.
+                # Extend downwards to the line below (if exists).
+                if line_idx < len(self.line_coords) - 1:
+                    below_line_y = np.mean(self.line_coords[line_idx+1])
+                    y2 = min(height, below_line_y - padding)
+        else:
+            y1, y2 = 0, height
+
         # Cropping the image.
-        cropped_img = Image.fromarray(img_array[y1:y2, x1:x2])
-        cropped_img.save(path)
-        
-        # Resizing with aspect ratio preservation.
-        img_array = io.imread(path)
-        max_dim = max(img_array.shape)
-        scale_factor = 28 / max_dim
-        new_size = (int(img_array.shape[1] * scale_factor), 
-                    int(img_array.shape[0] * scale_factor))
-        
-        resized_img = Image.fromarray(img_array, mode='L').resize(
-            new_size, Image.BICUBIC)
-        
-        # Centering on 32x32 white background.
-        background = Image.new('L', (32, 32), color=255)
-        offset = ((32 - resized_img.width) // 2, 
-                (32 - resized_img.height) // 2)
-        background.paste(resized_img, offset)
-        
-        # Applying final thresholding and saving.
-        final_img = self.black_and_white(np.array(background))
-        Image.fromarray(final_img).save(path)
-    
+        cropped_img = img_array[int(y1):int(y2), x1:x2]
+
+        # Converting to black and white and saving.
+        final_array = self.black_and_white(cropped_img)
+        Image.fromarray(final_array).save(path)
+
     def recognize_character(self, char_image):
         """
         Recognizing a single character.
@@ -470,6 +463,7 @@ class GreekTextRecognizer:
         """
         # Original image.
         plt.figure(figsize=(10, 4))
+        plt.style.use('dark_background')
         plt.subplot(1, 2, 1)
         plt.imshow(char_image, cmap='gray')
         plt.title("Original Character")
@@ -489,7 +483,8 @@ class GreekTextRecognizer:
         plt.imshow(img_to_show, cmap='gray')
         plt.title("Transformed (Model Input)")
         plt.axis('off')
-        
+        plt.style.use('dark_background')
+
         plt.tight_layout()
         plt.show()
         
