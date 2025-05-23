@@ -46,14 +46,14 @@ class GreekTextRecognizer:
         self.img_lines = self.input_with_lines(IMG_PATH)
         self.img_no_lines = self.input_without_lines(IMG_PATH)
 
-        # Calculating the coordinates of each line of the notebook.
-        self.line_coords = self.find_line_coordinates(self.img_no_lines)
+        # The space between the lines.
+        self.line_height = self.line_distance(self.img_lines)
+
+        # Calculating the coordinates of blocks of text recognized.
+        self.block_coords = self.find_blocks(self.img_no_lines)
 
         # Detects space boxes for characters.
-        self.spaces = self.detect_spaces(self.img_no_lines, self.line_coords)
-
-        # The space between the lines.
-        self.line_space = self.line_distance(self.img_lines)
+        self.spaces = self.detect_spaces(self.img_no_lines, self.block_coords)
         
         # Transform applied to each generated cropped image.
         self.transform = transforms.Compose([
@@ -155,67 +155,86 @@ class GreekTextRecognizer:
         binary_image[image > threshold] = 255
         return binary_image
     
-    def find_line_coordinates(self, logo):
+    def find_blocks(self, logo):
         """
-        Detects lines of text in the image and 
-        returns their bounding coordinates.
+        Detects lines of text in the image and returns
+        their bounding coordinates. We use a threshold
+        of width >= 10 to remove noise.
         """
-        coords = []
-        xycoords = []
+        line_boundaries = []
         
-        def line_coords(coords):
-            xmin = coords[0][0][0]
-            xmax = coords[-1][0][0]
-            ymin = 20000
-            ymax = 0
+        def calculate_line_boundary(coords_list):
+            """
+            Calculating the bounding box for a 
+            complete line from character coordinates.
+            """
+            x_coords = [coord[0][0] for coord in coords_list]
+            y_coords = [j[1] for coord in coords_list for j in coord]
             
-            for i in coords:
-                for j in i:
-                    if j[1] > ymax:
-                        ymax = j[1]
-                    if j[1] < ymin:
-                        ymin = j[1]
+            xmin, xmax = min(x_coords), max(x_coords)
+            ymin, ymax = min(y_coords), max(y_coords)
             
-            xycoords.append([xmin, xmax+2, ymin+1, ymax])
+            # Adding a small padding to the boundaries.
+            padding = 3
+            return [xmin, xmax + padding, max(0, ymin - padding), ymax + padding]
         
-        for i in range(len(logo[1:-1,1:-1])):
-            coo = []
-            flag = 0
-            
-            # Check if line contains text.
-            for c in logo[1:-1,1:-1][i]:
-                if c < 200:
-                    flag = 1
-            
-            if flag == 1:
-                # Find character boundaries.
-                for b in range(len(logo[1:-1,1:-1][i])):
-                    if logo[1:-1,1:-1][i][b] > 200:
-                        try:
-                            if logo[1:-1,1:-1][i][b+1] < 200:
-                                coo.append([i,b+1])
-                        except:
-                            pass
-                    
-                    if logo[1:-1,1:-1][i][b] < 200:
-                        try:
-                            if logo[1:-1,1:-1][i][b+1] > 200:
-                                coo.append([i,b])
-                        except:
-                            pass
-            else:
-                if len(coords) > 0:
-                    line_coords(coords)
-                    coords = []
-            
-            if len(coo) > 0:
-                coords.append(coo)
+        MIN_BLOCK_WIDTH = 5
+
+        # Check 1 -> Detecting all potential character transitions.
+        transitions = []
+        for row_idx, row in enumerate(logo[1:-1, 1:-1]):
+            for col_idx in range(len(row) - 1):
+                current_pixel = row[col_idx]
+                next_pixel = row[col_idx + 1]
+                
+                # Transition points (background<->text).
+                if (current_pixel > 200 and next_pixel < 200) or \
+                (current_pixel < 200 and next_pixel > 200):
+                    transitions.append((row_idx + 1, col_idx + 1))  # +1 for border offset.
         
-        print("Line Coordinates Found:", xycoords)
+        # Check 2 -> Group transitions into lines with tonos awareness.
+        if transitions:
+            # Sorting transitions by row then column.
+            transitions.sort()
+            
+            current_row = transitions[0][0]
+            line_segments = []
+            
+            for row_idx, col_idx in transitions:
+                # Checking if we've moved to a new line.
+                if abs(row_idx - current_row) > self.line_height * 1.1:
+                    if line_segments:
+                        boundary = calculate_line_boundary(line_segments)
+                        block_width = boundary[3] - boundary[2] # ymax - ymin.
+
+                        if block_width >= MIN_BLOCK_WIDTH:
+                            line_boundaries.append(boundary)
+
+                        line_segments = []
+                    current_row = row_idx
+                
+                # Checking if this is likely a tonos (small vertical displacement).
+                is_tonos = False
+                if line_segments:
+                    last_col = line_segments[-1][-1][1]
+                    if abs(col_idx - last_col) < 10:  # Tonos appears close to previous character.
+                        is_tonos = True
+                
+                if not is_tonos:
+                    line_segments.append([(row_idx, col_idx)])
+            
+            # Adding the last line.
+            if line_segments:
+                boundary = calculate_line_boundary(line_segments)
+                block_width = boundary[3] - boundary[2]
+                if block_width >= MIN_BLOCK_WIDTH:
+                    line_boundaries.append(boundary)
+                
+        print("Line Coordinates Found:", line_boundaries)
 
         color_logo = cv2.cvtColor(logo, cv2.COLOR_GRAY2BGR)
 
-        for i, (x1, x2, y1, y2) in enumerate(xycoords):
+        for i, (x1, x2, y1, y2) in enumerate(line_boundaries):
             cv2.rectangle(color_logo, (y1, x1), (y2, x2), (0, 255, 0), 1)
             label = f"Line {i+1}: [{y1},{x1}]→[{y2},{x2}]"
             cv2.putText(color_logo, label, (y1, x1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
@@ -224,9 +243,9 @@ class GreekTextRecognizer:
         plt.imshow(cv2.cvtColor(color_logo, cv2.COLOR_BGR2RGB))
         plt.title("Detected Notebook Lines with Bounding Boxes")
         plt.axis('off')
-        #plt.show()
+        plt.show()
 
-        return xycoords
+        return line_boundaries
     
     def line_distance(self, image, show=True, save=False):
         '''
@@ -332,8 +351,9 @@ class GreekTextRecognizer:
         the clean_and_resize function.
         """
         all_columns = []
-        count = 0
         self.char_positions = []
+        MIN_CHAR_WIDTH = 5
+        count = 0
 
         for top, bottom, left, right in finalXY:
             region = logo[top:bottom, left:right]
@@ -353,10 +373,12 @@ class GreekTextRecognizer:
             all_columns.append(boundaries)
 
             for i in range(len(boundaries) - 1):
-                char_region = region[:, boundaries[i]:boundaries[i + 1]]
-                bw_char = self.black_and_white(char_region).astype(np.uint8)
-                Image.fromarray(bw_char).save(f"{DUMP}/{count}.png")
-                count += 1
+                char_width = boundaries[i+1] - boundaries[i]
+                if char_width >= MIN_CHAR_WIDTH:
+                    char_region = region[:, boundaries[i]:boundaries[i + 1]]
+                    bw_char = self.black_and_white(char_region).astype(np.uint8)
+                    Image.fromarray(bw_char).save(f"{DUMP}/{count}.png")
+                    count += 1
 
         return all_columns
     
@@ -382,7 +404,7 @@ class GreekTextRecognizer:
 
         # Finding which line this character belongs to.
         current_line = None
-        for line_idx, line in enumerate(self.line_coords):
+        for line_idx, line in enumerate(self.block_coords):
             # Check if character is between line start and end.
             if line[0] <= char_index <= line[1]:
                 current_line = line
@@ -485,18 +507,18 @@ class GreekTextRecognizer:
     
     def reconstruct_text(self, charPred, spaces):
         """
-        Reconstructs the recognized characters into words and lines,
-        using the space information and dictionary lookup.
+        Reconstructs the recognized characters into words and 
+        lines, using the space information and dictionary lookup.
         """
         full_text = []
         current_word = []
         current_confidences = []
         confidence_scores = []
-        word_stats = defaultdict(int)
         
         co = 0
         for char in charPred:
-            if spaces[co] == 1:  # Space between words.
+            # Space between words.
+            if spaces[co] == 1:  
                 if current_word:
                     word = ''.join(current_word)
                     avg_conf = sum(current_confidences)/len(current_confidences) if current_confidences else 0
@@ -505,7 +527,8 @@ class GreekTextRecognizer:
                     current_word = []
                     current_confidences = []
                 full_text.append(' ')
-            elif spaces[co] == 2:  # New line.
+            # New line.
+            elif spaces[co] == 2:  
                 if current_word:
                     word = ''.join(current_word)
                     avg_conf = sum(current_confidences)/len(current_confidences) if current_confidences else 0
@@ -546,11 +569,12 @@ class GreekTextRecognizer:
         """
         Main OCR pipeline that processes an image file and
         returns the recognized text with statistics. The
-        input image loading, notebook line and space finding
-        is initialized in __init__.
+        input image loading, text blocks, space and average
+        height between each notebook line are initialized 
+        in __init__ to avoid clutter.
         """
         # Segments characters.
-        self.segment_characters(self.img_no_lines, self.line_coords)
+        self.segment_characters(self.img_no_lines, self.block_coords)
         print("Character segmentation completed.")
         
         # Processes each character.
@@ -558,17 +582,14 @@ class GreekTextRecognizer:
             self.clean_and_resize(DUMP+"/"+str(im))
         
         # Recognizing each character added to the image folder.
-        co = -1
         charPred = []
-        confidence_scores = []
-        
         char_data = []
-        for i in os.listdir(DUMP+"/"):
-            img_path = os.path.join(DUMP, f"{i}.png")
+        for i in sorted(os.listdir(DUMP+"/")):
+            img_path = os.path.join(DUMP, i)
             with Image.open(img_path) as image:
                 char, conf = self.recognize_character(np.asarray(image))
                 char_data.append((char, conf))
-            os.remove(img_path)
+            #os.remove(img_path)
         
         # Reconstructing the text with dictionary checking.
         return self.reconstruct_text(charPred, self.spaces)
