@@ -9,6 +9,7 @@ from torchvision import transforms
 from skimage.transform import (hough_line, hough_line_peaks)
 from PIL import Image, ImageOps
 import ckwrap
+import shutil
 from skimage import io
 from collections import defaultdict
 
@@ -19,6 +20,7 @@ from data_loading import class_mapping
 
 MODEL_PATH = "/home/ml3/Desktop/Thesis/rs1_tt2_v2.pth"
 IMG_PATH = "/home/ml3/Desktop/Thesis/.venv/model_test.jpg"
+#IMG_PATH = "/home/ml3/Desktop/model_test2.JPG"
 DUMP = "/home/ml3/Desktop/Thesis/LetterDump"
 IMG_HEIGHT = 512
 IMG_WIDTH = 78
@@ -29,6 +31,23 @@ class GreekTextRecognizer:
     def __init__(self, model_path, device):
         # Creating the generated cropped image folder. 
         os.makedirs(DUMP, exist_ok=True)
+
+        # Removing all the previous files from the folder.
+        for filename in os.listdir(DUMP):
+            file_path = os.path.join(DUMP, filename)
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.remove(file_path)
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+        
+        '''
+        Dictionary that stores the coordinates of each letter found.
+        Layout: {file_name:[[x1, x2], [y1, y2]]} 
+        '''
+        self.letter_coord = {
+            'image_dimensions': None,
+            'letters': {}
+        }
 
         # Loading the model.
         self.device = device
@@ -324,7 +343,7 @@ class GreekTextRecognizer:
 
             for col in range(width):
                 column = segment[:, col]
-                if np.any(column == 0):  # Contains a black pixel
+                if np.any(column == 0):  # Contains a black pixel.
                     if white_count > 0:
                         whitespace_lengths.append(white_count)
                         white_count = 0
@@ -339,7 +358,7 @@ class GreekTextRecognizer:
             if non_zero_spaces.size == 0:
                 spaces.append(2)
             else:
-                # Cluster into small/large spaces
+                # Cluster into small/large spaces.
                 labels = ckwrap.ckmeans(non_zero_spaces, 2).labels
                 spaces.extend(labels)
                 spaces.append(2)
@@ -378,8 +397,26 @@ class GreekTextRecognizer:
                 char_width = boundaries[i+1] - boundaries[i]
                 if char_width >= MIN_CHAR_WIDTH:
                     char_region = region[:, boundaries[i]:boundaries[i + 1]]
+                    
+                    # Finding the vertical bounds of the character.
+                    rows_with_ink = np.any(char_region < 200, axis=1)
+                    y_positions = np.where(rows_with_ink)[0]
+                    char_top = top + y_positions.min() if len(y_positions) > 0 else top
+                    char_bottom = top + y_positions.max() + 1 if len(y_positions) > 0 else bottom
+                    
+                    # Calculating absolute coordinates.
+                    abs_x1 = left + boundaries[i]
+                    abs_x2 = left + boundaries[i + 1]
+                    
                     bw_char = self.black_and_white(char_region).astype(np.uint8)
                     filename = f"{line_idx}_{char_count}.png"
+                    
+                    # Storing absolute coordinates with proper height.
+                    self.letter_coord['letters'][filename] = [
+                        [abs_x1, abs_x2],  
+                        [char_top, char_bottom] 
+                    ]
+                    
                     Image.fromarray(bw_char).save(f"{DUMP}/{filename}")
                     char_count += 1
 
@@ -397,59 +434,50 @@ class GreekTextRecognizer:
             """Check if the column/row contains any black pixels (0)."""
             return any(pixel == 0 for pixel in column_or_row)
         
-        # Loading the letter and finding content boundaries.
         img_array = io.imread(path)
-        height, width = img_array.shape
+        filename = os.path.basename(path)
         
-        # Getting the line number of the filename. 
-        # IMG Format: lineidx_number.png
-        line_idx = int(os.path.basename(path).split('_')[0])
-
-        '''Finding horizontal boundaries (x1, x2).'''
-        # Finding the first and last columns with content.
-        x1, x2 = 0, width
-        for i in range(width):
-            if has_black_pixels(img_array[:, i]):
-                x1 = max(0, i-1)  # Small padding.
-                break
-                
-        for i in range(width-1, -1, -1):
-            if has_black_pixels(img_array[:, i]):
-                x2 = min(width, i+2)  # Small padding.
-                break
-        
-        '''Y-AXIS WITH NOTEBOOK LINES'''
-        if line_idx < len(self.block_coords):
-            current_line_y = np.mean(self.line_coords[line_idx])
-            padding = int(self.line_height * 0.2)
-
-            # Defaulting to current line position.
-            y1 = max(0, current_line_y - self.line_height - padding)
-            y2 = min(height, current_line_y + self.line_height + padding)
-
-            # Checking if character extends below the current line.
-            bottom_pixels = img_array[int(current_line_y):, x1:x2]
-            if np.any(bottom_pixels < 200):
-                # Finding the line above if it exists.
-                if line_idx > 0:
-                    above_line_y = np.mean(self.line_coords[line_idx-1])
-                    y1 = max(0, above_line_y + padding)
-                else:
-                    # Extra space if first line.
-                    y1 = max(0, current_line_y - 2*self.line_height)  
-
-            # Check if character extends above the current line
-            top_pixels = img_array[:int(current_line_y), x1:x2]
-            if np.any(top_pixels < 200):  # If there are dark pixels above line.
-                # Extend downwards to the line below (if exists).
-                if line_idx < len(self.line_coords) - 1:
-                    below_line_y = np.mean(self.line_coords[line_idx+1])
-                    y2 = min(height, below_line_y - padding)
-        else:
-            y1, y2 = 0, height
+        # Getting original coordinates before cleaning.
+        if filename in self.letter_coord['letters']:
+            orig_coords = self.letter_coord['letters'][filename]
+            orig_x1, orig_x2 = orig_coords[0]
+            orig_y1, orig_y2 = orig_coords[1]
+            
+            # Find content bounds in x-axis.
+            x1, x2 = 0, img_array.shape[1]
+            for i in range(img_array.shape[1]):
+                if has_black_pixels(img_array[:, i]):
+                    x1 = max(0, i-1)
+                    break
+                    
+            for i in range(img_array.shape[1]-1, -1, -1):
+                if has_black_pixels(img_array[:, i]):
+                    x2 = min(img_array.shape[1], i+2)
+                    break
+            
+            # Calculating new absolute x coordinates.
+            new_x1 = orig_x1 + x1
+            new_x2 = orig_x2 - (img_array.shape[1] - x2)
+            
+            # Finding actual vertical bounds after cleaning.
+            rows_with_ink = np.any(img_array < 200, axis=1)
+            y_positions = np.where(rows_with_ink)[0]
+            if len(y_positions) > 0:
+                rel_y1 = y_positions.min()
+                rel_y2 = y_positions.max() + 1
+                new_y1 = orig_y1 + rel_y1
+                new_y2 = orig_y1 + rel_y2
+            else:
+                new_y1, new_y2 = orig_y1, orig_y2
+            
+            # Update coordinates
+            self.letter_coord['letters'][filename] = [
+                [new_x1, new_x2],
+                [new_y1, new_y2]
+            ]
 
         # Cropping the image.
-        cropped_img = img_array[int(y1):int(y2), x1:x2]
+        cropped_img = img_array[:, x1:x2]
 
         # Converting to black and white and saving.
         final_array = self.black_and_white(cropped_img)
@@ -473,12 +501,12 @@ class GreekTextRecognizer:
         char_pil = Image.fromarray(char_image).convert('L')
         transformed_img = self.transform(char_pil)
         
-        # Prepare transformed image for display
+        # Prepare transformed image for display.
         img_to_show = transformed_img.squeeze().cpu().numpy()
-        img_to_show = (img_to_show * 0.5) + 0.5  # Undo normalization
+        img_to_show = (img_to_show * 0.5) + 0.5 
         img_to_show = np.clip(img_to_show, 0, 1)
         
-        # Transformed image
+        # Transformed image.
         plt.subplot(1, 2, 2)
         plt.imshow(img_to_show, cmap='gray')
         plt.title("Transformed (Model Input)")
@@ -488,7 +516,7 @@ class GreekTextRecognizer:
         plt.tight_layout()
         plt.show()
         
-        # Continue with recognition
+        # Continuing with recognition.
         char_tensor = transformed_img.unsqueeze(0).to(self.device)
         
         with torch.no_grad():
@@ -575,6 +603,9 @@ class GreekTextRecognizer:
         # Processes each character.
         for im in os.listdir(DUMP+"/"):
             self.clean_and_resize(DUMP+"/"+str(im))
+
+        for filename, coords in recognizer.letter_coord['letters'].items():
+            print(f"{filename}: x={coords[0]}, y={coords[1]}")
         
         # Recognizing each character added to the image folder.
         charPred = []
