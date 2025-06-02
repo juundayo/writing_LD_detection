@@ -22,6 +22,7 @@ MODEL_PATH = "/home/ml3/Desktop/Thesis/rs1_tt2_v2.pth"
 IMG_PATH = "/home/ml3/Desktop/Thesis/.venv/model_test.jpg"
 #IMG_PATH = "/home/ml3/Desktop/model_test2.JPG"
 DUMP = "/home/ml3/Desktop/Thesis/LetterDump"
+OUTPUT_FOLDER = "/home/ml3/Desktop/Thesis/LetterCrops"
 IMG_HEIGHT = 512
 IMG_WIDTH = 78
 
@@ -40,10 +41,8 @@ class GreekTextRecognizer:
             elif os.path.isdir(file_path):
                 shutil.rmtree(file_path)
         
-        '''
-        Dictionary that stores the coordinates of each letter found.
-        Layout: {file_name:[[x1, x2], [y1, y2]]} 
-        '''
+        
+        # Dictionary that stores the coordinates of each letter found.
         self.letter_coord = {
             'image_dimensions': None,
             'letters': {}
@@ -66,13 +65,13 @@ class GreekTextRecognizer:
         self.img_lines = self.input_with_lines(IMG_PATH)
         self.img_no_lines = self.input_without_lines(IMG_PATH)
 
-        # The space between the lines.
+        # Calculating the space between the notebook lines.
         self.line_height, self.line_coords = self.line_distance(self.img_lines)
 
         # Calculating the coordinates of blocks of text recognized.
         self.block_coords = self.find_blocks(self.img_no_lines)
 
-        # Detects space boxes for characters.
+        # Detecting space boxes for characters.
         self.spaces = self.detect_spaces(self.img_no_lines, self.block_coords)
         
         # Transform applied to each generated cropped image.
@@ -175,6 +174,68 @@ class GreekTextRecognizer:
         binary_image[image > threshold] = 255
         return binary_image
     
+    def line_distance(self, image):
+        '''
+        Dynamically detecting the lines of the input image using Hough
+        transform to calculating the distance between each line. 
+        '''
+        angle_list = []
+        dist_list = []
+        line_coords = []
+
+        inverted = ~image
+        tested_angles = np.linspace(-np.pi / 2, np.pi / 2, 180)
+        hspace, theta, dist = hough_line(inverted, tested_angles)
+        _, q, d = hough_line_peaks(hspace, theta, dist)
+
+        _, axes = plt.subplots(1, 3, figsize=(15, 6))
+        ax = axes.ravel()
+        ax[0].imshow(inverted, cmap='gray')
+        ax[0].set_title('Input image')
+        ax[0].set_axis_off()
+        ax[1].imshow(np.log(1 + hspace),
+                extent=[np.rad2deg(theta[-1]), np.rad2deg(theta[0]), 
+                        dist[-1], dist[0]], cmap='gray', aspect=1/1.5)
+        ax[1].set_title('Hough transform')
+        ax[1].set_xlabel('Angles (degrees)')
+        ax[1].set_ylabel('Distance (pixels)')
+        ax[1].axis('image')
+        ax[2].imshow(inverted, cmap='gray')
+
+        # Sorting the lines by their distance (y-coordinate).
+        origin = np.array((0, inverted.shape[1]))
+        sorted_indices = np.argsort(d)
+        sorted_distances = d[sorted_indices]
+        sorted_angles = q[sorted_indices]
+
+        line_distances = []
+        for i in range(1, len(sorted_distances)):
+            line_distances.append(sorted_distances[i] - sorted_distances[i-1])
+
+        # Calculating the average distance between lines.
+        avg_line_distance = np.mean(line_distances) if line_distances else 0
+
+        for angle, dist in zip(sorted_angles, sorted_distances):
+            angle_list.append(angle)
+            dist_list.append(dist)
+            y0, y1 = (dist - origin * np.cos(angle)) / np.sin(angle)
+            ax[2].plot(origin, (y0, y1), '-r')
+            line_coords.append((y0, y1))
+
+        ax[2].set_xlim(origin)
+        ax[2].set_ylim((image.shape[0], 0))
+        ax[2].set_axis_off()
+        ax[2].set_title('Detected lines')
+        plt.tight_layout()
+        plt.show()
+
+        # Storing the line coordinates for later use.
+        self.detected_lines = sorted_distances
+
+        print(f"Average distance between lines: {avg_line_distance} pixels")
+        print(f"Line coordinates:", line_coords)
+        return avg_line_distance, line_coords
+    
     def find_blocks(self, logo):
         """
         Detects lines of text in the image and returns
@@ -266,67 +327,6 @@ class GreekTextRecognizer:
 
         return line_boundaries
     
-    def line_distance(self, image, show=True):
-        '''
-        Dynamically detecting the lines of the input image using Hough
-        transform to calculating the distance between each line. 
-        '''
-        angle_list = []
-        dist_list = []
-        line_coords = []
-
-        inverted = ~image
-        tested_angles = np.linspace(-np.pi / 2, np.pi / 2, 180)
-        hspace, theta, dist = hough_line(inverted, tested_angles)
-        _, q, d = hough_line_peaks(hspace, theta, dist)
-
-        _, axes = plt.subplots(1, 3, figsize=(15, 6))
-        ax = axes.ravel()
-        ax[0].imshow(inverted, cmap='gray')
-        ax[0].set_title('Input image')
-        ax[0].set_axis_off()
-        ax[1].imshow(np.log(1 + hspace),
-             extent=[np.rad2deg(theta[-1]), np.rad2deg(theta[0]), 
-                     dist[-1], dist[0]], cmap='gray', aspect=1/1.5)
-        ax[1].set_title('Hough transform')
-        ax[1].set_xlabel('Angles (degrees)')
-        ax[1].set_ylabel('Distance (pixels)')
-        ax[1].axis('image')
-        ax[2].imshow(inverted, cmap='gray')
-
-        # Sorting the lines by their distance (y-coordinate).
-        origin = np.array((0, inverted.shape[1]))
-        sorted_indices = np.argsort(d)
-        sorted_distances = d[sorted_indices]
-        sorted_angles = q[sorted_indices]
-
-        line_distances = []
-        for i in range(1, len(sorted_distances)):
-            line_distances.append(sorted_distances[i] - sorted_distances[i-1])
-
-        # Calculating the average distance between lines.
-        avg_line_distance = np.mean(line_distances) if line_distances else 0
-
-        for angle, dist in zip(sorted_angles, sorted_distances):
-            angle_list.append(angle)
-            dist_list.append(dist)
-            y0, y1 = (dist - origin * np.cos(angle)) / np.sin(angle)
-            ax[2].plot(origin, (y0, y1), '-r')
-            line_coords.append((y0, y1))
-
-        ax[2].set_xlim(origin)
-        ax[2].set_ylim((image.shape[0], 0))
-        ax[2].set_axis_off()
-        ax[2].set_title('Detected lines')
-        plt.tight_layout()
-        plt.show()
-
-        # Storing the line coordinates for later use.
-        self.detected_lines = sorted_distances
-
-        print(f"Average distance between lines: {avg_line_distance} pixels")
-        print(f"Line coordinates:", line_coords)
-        return avg_line_distance, line_coords
     
     def detect_spaces(self, logo, xycoords):
         """
@@ -343,7 +343,7 @@ class GreekTextRecognizer:
 
             for col in range(width):
                 column = segment[:, col]
-                if np.any(column == 0):  # Contains a black pixel.
+                if np.any(column == 0):  # Contains a black pixel
                     if white_count > 0:
                         whitespace_lengths.append(white_count)
                         white_count = 0
@@ -358,7 +358,7 @@ class GreekTextRecognizer:
             if non_zero_spaces.size == 0:
                 spaces.append(2)
             else:
-                # Cluster into small/large spaces.
+                # Cluster into small/large spaces
                 labels = ckwrap.ckmeans(non_zero_spaces, 2).labels
                 spaces.extend(labels)
                 spaces.append(2)
@@ -401,21 +401,20 @@ class GreekTextRecognizer:
                     # Finding the vertical bounds of the character.
                     rows_with_ink = np.any(char_region < 200, axis=1)
                     y_positions = np.where(rows_with_ink)[0]
-                    char_top = top + y_positions.min() if len(y_positions) > 0 else top
-                    char_bottom = top + y_positions.max() + 1 if len(y_positions) > 0 else bottom
                     
-                    # Calculating absolute coordinates.
                     abs_x1 = left + boundaries[i]
                     abs_x2 = left + boundaries[i + 1]
+                    abs_y1 = top + (y_positions.min() if len(y_positions) > 0 else 0)
+                    abs_y2 = top + (y_positions.max() + 1 if len(y_positions) > 0 else (bottom - top))
+
+                    filename = f"{line_idx}_{char_count}.png"
+                    # Store absolute coordinates with proper height
+                    self.letter_coord['letters'][filename] = [
+                        [int(abs_x1), int(abs_x2)],  # absolute x coordinates
+                        [int(abs_y1), int(abs_y2)]   # absolute y coordinates
+                    ]
                     
                     bw_char = self.black_and_white(char_region).astype(np.uint8)
-                    filename = f"{line_idx}_{char_count}.png"
-                    
-                    # Storing absolute coordinates with proper height.
-                    self.letter_coord['letters'][filename] = [
-                        [abs_x1, abs_x2],  
-                        [char_top, char_bottom] 
-                    ]
                     
                     Image.fromarray(bw_char).save(f"{DUMP}/{filename}")
                     char_count += 1
@@ -437,13 +436,13 @@ class GreekTextRecognizer:
         img_array = io.imread(path)
         filename = os.path.basename(path)
         
-        # Getting original coordinates before cleaning.
+        # Get original coordinates before cleaning
         if filename in self.letter_coord['letters']:
             orig_coords = self.letter_coord['letters'][filename]
             orig_x1, orig_x2 = orig_coords[0]
             orig_y1, orig_y2 = orig_coords[1]
             
-            # Find content bounds in x-axis.
+            # Find content bounds in x-axis
             x1, x2 = 0, img_array.shape[1]
             for i in range(img_array.shape[1]):
                 if has_black_pixels(img_array[:, i]):
@@ -457,23 +456,25 @@ class GreekTextRecognizer:
             
             # Calculating new absolute x coordinates.
             new_x1 = orig_x1 + x1
-            new_x2 = orig_x2 - (img_array.shape[1] - x2)
+            new_x2 = orig_x1 + x2
             
             # Finding actual vertical bounds after cleaning.
             rows_with_ink = np.any(img_array < 200, axis=1)
             y_positions = np.where(rows_with_ink)[0]
+
+            #padding = 0.04 * self.line_height
             if len(y_positions) > 0:
                 rel_y1 = y_positions.min()
-                rel_y2 = y_positions.max() + 1
+                rel_y2 = y_positions.max() + 1 
+                
                 new_y1 = orig_y1 + rel_y1
                 new_y2 = orig_y1 + rel_y2
             else:
                 new_y1, new_y2 = orig_y1, orig_y2
             
-            # Update coordinates
             self.letter_coord['letters'][filename] = [
                 [new_x1, new_x2],
-                [new_y1, new_y2]
+                [int(new_y1), int(new_y2)]
             ]
 
         # Cropping the image.
@@ -482,6 +483,18 @@ class GreekTextRecognizer:
         # Converting to black and white and saving.
         final_array = self.black_and_white(cropped_img)
         Image.fromarray(final_array).save(path)
+
+    def crop_original_img(self):
+        image = Image.open(IMG_PATH)
+
+        for filename, coords in self.letter_coord['letters'].items():
+            x1, x2 = coords[0]
+            y1, y2 = coords[1]
+
+            cropped = image.crop((x1, y1, x2, y2))
+
+            output_path = os.path.join(OUTPUT_FOLDER, filename)
+            cropped.save(output_path)
 
     def recognize_character(self, char_image):
         """
@@ -501,12 +514,12 @@ class GreekTextRecognizer:
         char_pil = Image.fromarray(char_image).convert('L')
         transformed_img = self.transform(char_pil)
         
-        # Prepare transformed image for display.
+        # Prepare transformed image for display
         img_to_show = transformed_img.squeeze().cpu().numpy()
-        img_to_show = (img_to_show * 0.5) + 0.5 
+        img_to_show = (img_to_show * 0.5) + 0.5  # Undo normalization
         img_to_show = np.clip(img_to_show, 0, 1)
         
-        # Transformed image.
+        # Transformed image
         plt.subplot(1, 2, 2)
         plt.imshow(img_to_show, cmap='gray')
         plt.title("Transformed (Model Input)")
@@ -516,7 +529,7 @@ class GreekTextRecognizer:
         plt.tight_layout()
         plt.show()
         
-        # Continuing with recognition.
+        # Continue with recognition
         char_tensor = transformed_img.unsqueeze(0).to(self.device)
         
         with torch.no_grad():
@@ -604,8 +617,11 @@ class GreekTextRecognizer:
         for im in os.listdir(DUMP+"/"):
             self.clean_and_resize(DUMP+"/"+str(im))
 
+        # Printing the coordinates of each letter found.
         for filename, coords in recognizer.letter_coord['letters'].items():
             print(f"{filename}: x={coords[0]}, y={coords[1]}")
+
+        self.crop_original_img()
         
         # Recognizing each character added to the image folder.
         charPred = []
