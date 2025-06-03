@@ -19,10 +19,13 @@ from data_loading import class_mapping
 # ----------------------------------------------------------------------------#
 
 MODEL_PATH = "/home/ml3/Desktop/Thesis/rs1_tt2_v2.pth"
+
 IMG_PATH = "/home/ml3/Desktop/Thesis/.venv/model_test.jpg"
 #IMG_PATH = "/home/ml3/Desktop/model_test2.JPG"
+
 DUMP = "/home/ml3/Desktop/Thesis/LetterDump"
 OUTPUT_FOLDER = "/home/ml3/Desktop/Thesis/LetterCrops"
+
 IMG_HEIGHT = 512
 IMG_WIDTH = 78
 
@@ -48,7 +51,7 @@ class GreekTextRecognizer:
             'letters': {}
         }
 
-        # Loading the model.
+        # Loading the OCR model.
         self.device = device
         self.model = self.load_model(model_path, len(class_mapping))
 
@@ -142,7 +145,7 @@ class GreekTextRecognizer:
 
         return image
     
-    def input_without_lines(self, IMAGE_PATH):
+    def input_without_lines(self, IMG_PATH):
         """
         Processes the input image through grayscale conversion,
         thresholding, and line/character segmentation.
@@ -176,8 +179,8 @@ class GreekTextRecognizer:
     
     def line_distance(self, image):
         '''
-        Dynamically detecting the lines of the input image using Hough
-        transform to calculating the distance between each line. 
+        Dynamically detecting the lines of the input image using a
+        Hough transform to calculate the distance between each line. 
         '''
         angle_list = []
         dist_list = []
@@ -327,13 +330,14 @@ class GreekTextRecognizer:
 
         return line_boundaries
     
-    
     def detect_spaces(self, logo, xycoords):
         """
         Uses k-means clustering to detect spaces between words
         based on vertical whitespace columns.
         """
         spaces = [0]
+        SPACE_SENSITIVITY = 0.5  # Lower = more sensitive to small spaces (0.5-1.0).
+        MIN_SPACE_WIDTH = 2      # Absolute minimum pixels to consider as space.
 
         for y_start, y_end, x_start, x_end in xycoords:
             segment = self.black_and_white(logo[y_start:y_end, x_start:x_end])
@@ -343,83 +347,143 @@ class GreekTextRecognizer:
 
             for col in range(width):
                 column = segment[:, col]
-                if np.any(column == 0):  # Contains a black pixel
-                    if white_count > 0:
+                if np.any(column == 0): # Contains text. 
+                    if white_count > MIN_SPACE_WIDTH:
                         whitespace_lengths.append(white_count)
-                        white_count = 0
-                else:
+                    white_count = 0
+                else: # Whitespace.
                     white_count += 1
 
-            if white_count > 0:
+            if white_count > MIN_SPACE_WIDTH:
                 whitespace_lengths.append(white_count)
 
-            non_zero_spaces = np.array([w for w in whitespace_lengths if w > 0])
+            # Classifying spaces using clustering.
+            non_zero_spaces = np.array([w for w in whitespace_lengths if w > MIN_SPACE_WIDTH])
 
             if non_zero_spaces.size == 0:
-                spaces.append(2)
+                spaces.append(2) # Newline.
             else:
-                # Cluster into small/large spaces
-                labels = ckwrap.ckmeans(non_zero_spaces, 2).labels
-                spaces.extend(labels)
-                spaces.append(2)
+                if len(non_zero_spaces) > 1:
+                    # Using percentiles.
+                    q25 = np.percentile(non_zero_spaces, 25)
+                    q75 = np.percentile(non_zero_spaces, 75)
+                    threshold = q25 + SPACE_SENSITIVITY * (q75 - q25)
+                    
+                    # Classifying each space.
+                    for space in whitespace_lengths:
+                        if space >= threshold:
+                            spaces.append(2)  # Word space.
+                        elif space >= MIN_SPACE_WIDTH:
+                            spaces.append(1)  # Character space.
+                else:
+                    # Fallback for lines with only one space
+                    spaces.extend([2 if s > MIN_SPACE_WIDTH+1 else 1 
+                                for s in whitespace_lengths])
+                
+                spaces.append(2)  # End of line marker.
 
         return np.array(spaces)
     
-    def segment_characters(self, image, finalXY):
+    def segment_words(self, image, finalXY):
         """
-        Segments individual characters from line segments and
-        saves them as a png that will later be processed by  
-        the clean_and_resize function.
+        Segments words from line segments using space classification (1=intra-word, 2=inter-word)
+        and saves each word as a separate PNG file.
         """
-        all_columns = []
         self.char_positions = []
-        MIN_CHAR_WIDTH = 5
+        MIN_WORD_WIDTH = 5      # Minimum width to consider a word segment.
 
         for line_idx, (top, bottom, left, right) in enumerate(finalXY):
-            region = image[top:bottom, left:right]
-            width = region.shape[1]
+            line_region = image[top:bottom, left:right]
+            
+            column_pos = 0
 
-            def is_background_column(i):
-                return all(pixel >= 150 for pixel in region[:, i])
+            # Scanning to find all space segments and their types.
+            segment = self.black_and_white(line_region)
+            _, width = segment.shape
+            whitespace_lengths = []
+            white_count = 0
 
-            boundaries = [0]
-            try:
-                boundaries += [i + 1 for i in range(width - 1)
-                            if is_background_column(i) and not is_background_column(i + 1)]
-            except IndexError:
-                pass
+            for col in range(width):
+                column = segment[:, col]
+                if np.any(column == 0):  # Contains text.
+                    if white_count > 0:
+                        whitespace_lengths.append((white_count, column_pos - white_count))
+                        white_count = 0
+                else:  # Whitespace.
+                    white_count += 1
+                column_pos += 1
 
-            boundaries.append(width)
-            all_columns.append(boundaries)
+            if white_count > 0:
+                whitespace_lengths.append((white_count, column_pos - white_count))
 
-            char_count = 0
-            for i in range(len(boundaries) - 1):
-                char_width = boundaries[i+1] - boundaries[i]
-                if char_width >= MIN_CHAR_WIDTH:
-                    char_region = region[:, boundaries[i]:boundaries[i + 1]]
+            non_zero_spaces = np.array([w[0] for w in whitespace_lengths if w[0] > 0])
+            
+            if non_zero_spaces.size > 0:
+                # Using k-means to classify spaces.
+                labels = ckwrap.ckmeans(non_zero_spaces, 2).labels
+                classified_spaces = []
+                for i, (length, pos) in enumerate(whitespace_lengths):
+                    if length > 0:
+                        classified_spaces.append((pos, pos + length, labels[i] + 1))  # 1 or 2
+                    else:
+                        classified_spaces.append((pos, pos + length, 0))  # no space
+            
+            # Splitting the line at type 2 spaces.
+            word_start = 0
+            word_count = 0
+            
+            for space in classified_spaces:
+                space_start, space_end, space_type = space
+                
+                if space_type == 2:  # Word boundary found.
+                    word_end = space_start
+                    if word_end - word_start >= MIN_WORD_WIDTH:
+                        # Extracting and saving the word.
+                        word_region = line_region[:, word_start:word_end]
+                        
+                        # Finding vertical bounds.
+                        rows_with_ink = np.any(word_region < 200, axis=1)
+                        y_positions = np.where(rows_with_ink)[0]
+                        
+                        abs_x1 = left + word_start
+                        abs_x2 = left + word_end
+                        abs_y1 = top + (y_positions.min() if len(y_positions) > 0 else 0)
+                        abs_y2 = top + (y_positions.max() + 1 if len(y_positions) > 0 else (bottom - top))
+
+                        filename = f"line{line_idx}_word{word_count}.png"
+                        self.letter_coord['letters'][filename] = [
+                            [int(abs_x1), int(abs_x2)],
+                            [int(abs_y1), int(abs_y2)]
+                        ]
+                        
+                        bw_word = self.black_and_white(word_region).astype(np.uint8)
+                        Image.fromarray(bw_word).save(f"{DUMP}/{filename}")
+                        word_count += 1
                     
-                    # Finding the vertical bounds of the character.
-                    rows_with_ink = np.any(char_region < 200, axis=1)
-                    y_positions = np.where(rows_with_ink)[0]
-                    
-                    abs_x1 = left + boundaries[i]
-                    abs_x2 = left + boundaries[i + 1]
-                    abs_y1 = top + (y_positions.min() if len(y_positions) > 0 else 0)
-                    abs_y2 = top + (y_positions.max() + 1 if len(y_positions) > 0 else (bottom - top))
+                    word_start = space_end  # Starting the next word after this space.
+            
+            # Save the last word in the line
+            if width - word_start >= MIN_WORD_WIDTH:
+                word_region = line_region[:, word_start:width]
+                
+                rows_with_ink = np.any(word_region < 200, axis=1)
+                y_positions = np.where(rows_with_ink)[0]
+                
+                abs_x1 = left + word_start
+                abs_x2 = left + width
+                abs_y1 = top + (y_positions.min() if len(y_positions) > 0 else 0)
+                abs_y2 = top + (y_positions.max() + 1 if len(y_positions) > 0 else (bottom - top))
 
-                    filename = f"{line_idx}_{char_count}.png"
-                    # Store absolute coordinates with proper height
-                    self.letter_coord['letters'][filename] = [
-                        [int(abs_x1), int(abs_x2)],  # absolute x coordinates
-                        [int(abs_y1), int(abs_y2)]   # absolute y coordinates
-                    ]
-                    
-                    bw_char = self.black_and_white(char_region).astype(np.uint8)
-                    
-                    Image.fromarray(bw_char).save(f"{DUMP}/{filename}")
-                    char_count += 1
+                filename = f"line{line_idx}_word{word_count}.png"
+                self.letter_coord['letters'][filename] = [
+                    [int(abs_x1), int(abs_x2)],
+                    [int(abs_y1), int(abs_y2)]
+                ]
+                
+                bw_word = self.black_and_white(word_region).astype(np.uint8)
+                Image.fromarray(bw_word).save(f"{DUMP}/{filename}")
 
-        return all_columns
+        return
     
     def clean_and_resize(self, path):
         """
@@ -610,7 +674,7 @@ class GreekTextRecognizer:
         in __init__ to avoid clutter.
         """
         # Segments characters.
-        self.segment_characters(self.img_no_lines, self.block_coords)
+        self.segment_words(self.img_no_lines, self.block_coords)
         print("Character segmentation completed.")
         
         # Processes each character.
