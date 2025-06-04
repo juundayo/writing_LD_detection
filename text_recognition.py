@@ -390,7 +390,9 @@ class GreekTextRecognizer:
         and saves each word as a separate PNG file.
         """
         self.char_positions = []
-        MIN_WORD_WIDTH = 5      # Minimum width to consider a word segment.
+        MIN_WORD_WIDTH = 5        # Minimum width to consider a word segment.
+        MIN_INTER_WORD_SPACE = 20 # Pixel difference between words.
+
 
         for line_idx, (top, bottom, left, right) in enumerate(finalXY):
             line_region = image[top:bottom, left:right]
@@ -415,18 +417,14 @@ class GreekTextRecognizer:
 
             if white_count > 0:
                 whitespace_lengths.append((white_count, column_pos - white_count))
-
-            non_zero_spaces = np.array([w[0] for w in whitespace_lengths if w[0] > 0])
             
-            if non_zero_spaces.size > 0:
-                # Using k-means to classify spaces.
-                labels = ckwrap.ckmeans(non_zero_spaces, 2).labels
-                classified_spaces = []
-                for i, (length, pos) in enumerate(whitespace_lengths):
-                    if length > 0:
-                        classified_spaces.append((pos, pos + length, labels[i] + 1))  # 1 or 2
-                    else:
-                        classified_spaces.append((pos, pos + length, 0))  # no space
+            classified_spaces = []
+            for length, pos in whitespace_lengths:
+                if length > 0:
+                    space_type = 2 if length >= MIN_INTER_WORD_SPACE else 1
+                    classified_spaces.append((pos, pos + length, space_type))
+                else:
+                    classified_spaces.append((pos, pos + length, 0))
             
             # Splitting the line at type 2 spaces.
             word_start = 0
@@ -549,6 +547,11 @@ class GreekTextRecognizer:
         Image.fromarray(final_array).save(path)
 
     def crop_original_img(self):
+        '''
+        Takes word coordinates and crops the 
+        original image to send it to the model 
+        for the final classification.
+        '''
         image = Image.open(IMG_PATH)
 
         for filename, coords in self.letter_coord['letters'].items():
