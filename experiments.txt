@@ -10,20 +10,40 @@ Our method:     ??/21
 
 
 2. Letter segmentation.
-CV2 w/ OTSU:	??/??
-CRAFT: 		--/--
+CV2 w/ OTSU:	  ??/??
+CRAFT: 		      --/--
 Vertical line:	??/??
-Tesseract:	??/??
+Tesseract:	    ??/??
 
 ---------------------------------------------------------------------
 
 Dataset:
+0. Need for data.
+The first step of handwritten word analysis is to use a robust OCR model, designed for handwritten text and most importantly, Greek character recognition. We experimented with a variety of OCR models that are widely used such as Tesseract [CITE], but were not satisfied by its results and found that creating our own model would be most beneficial for this project.
+However, this arose a need for handwritten Greek character letters written in a variety of different handwritings to use as data that will be learned by our model. 
+
 1. Data collection.
-For the dataset we asked ~100 people, aged from 18 to 60, to write the Greek alphabet in lowercase and uppercase, as well as each possible tonos and dialitika(??) variants. It should be noted that each person who contributed to the dataset wrote a consent form that includes their name, signature and date, stating their permission to have their handwritten characters used for this project. 
+For the dataset we asked ~100 people, aged from 18 to 60, to write the Greek alphabet in lowercase and uppercase, as well as each possible tonos and dialitika(??) variants. It should be noted that each person who contributed to the dataset filled out a consent form that included their name, signature and date, stating their permission to have their handwritten characters used for this project. 
+
 2. Collected data form.
-Each character was separated by the others by a large horizontal space and a vertical notebook line, making it easier to crop individual characters that exceed the notebook line such as (INSERT RO AND KSI) to avoid them being connected with other letters, for example in the notebook line under or above.
-3. Data post-processing.
-After cropping each letter individually, we created folders for each letter that will later represent the final class that will ultimately be predicted by the OCR model afterwards. 
+Each character was separated by the others by a large horizontal space and a vertical notebook line, making it easier to crop individual characters that exceed the notebook line such as (INSERT RO AND KSI) to avoid them being connected with other letters, for example in the notebook line above or under. 
+
+3. Data pre-processing.
+i. Dataset format.
+After cropping each letter individually, we created folders for each letter that will later represent the final class that will ultimately be predicted by the OCR model afterwards.
+The format used to iterate through every letter was created as follows:
+DATA -> SingleCharacters/DoubleCharacters -> LetterFolder -> LetterImages
+where each letter folder included about 100 images of its corresponding handwritten character.
+The character image cropping was done in two different ways to add diversity which will accompany the augmentations implemented later.
+a. Tightly cropping both the x and y axis.
+b. Tightly cropping the x axis and including both of the notebook lines above and below the letter.
+
+ii. Augmentations and loading.
+Having collected all characters and labeled them in their corresponding folders, we proceeded to create a script that loads the data and creates augmentations of each image. Specifically, we created 6000 augmentations with the following attributes:
+a. Random (-7, 7) degree rotation.
+b. Random (1, 1.5) contrast added.
+The augmentations mentioned above were created because of the lack of data and need for variations - and ultimately more robust training. Because of these augmentations, every letter folder in the final dataset contained around 600,000 images. 
+It should be stated that we also applied a large variety of other dynamic augmentations while the model was training, to reinforce the learning process and ultimately increase the mode's accuracy by ~13%. Further analysis of said segmentations can be found in the Model Training section. 
 
 ---------------------------------------------------------------------
 
