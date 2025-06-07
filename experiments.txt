@@ -1,0 +1,33 @@
+---------------------------------------------------------------------
+
+1. Word segmentation.
+
+CV2 w/ OTSU:     3/21
+CRAFT:          11/21
+Vertical line:  ??/21
+Tesseract:      ??/21
+Our method:     ??/21
+
+
+2. Letter segmentation.
+CV2 w/ OTSU:	??/??
+CRAFT: 		--/--
+Vertical line:	??/??
+Tesseract:	??/??
+
+---------------------------------------------------------------------
+
+Dataset:
+1. Data collection.
+For the dataset we asked ~100 people, aged from 18 to 60, to write the Greek alphabet in lowercase and uppercase, as well as each possible tonos and dialitika(??) variants. It should be noted that each person who contributed to the dataset wrote a consent form that includes their name, signature and date, stating their permission to have their handwritten characters used for this project. 
+2. Collected data form.
+Each character was separated by the others by a large horizontal space and a vertical notebook line, making it easier to crop individual characters that exceed the notebook line such as (INSERT RO AND KSI) to avoid them being connected with other letters, for example in the notebook line under or above.
+3. Data post-processing.
+After cropping each letter individually, we created folders for each letter that will later represent the final class that will ultimately be predicted by the OCR model afterwards. 
+
+---------------------------------------------------------------------
+
+Model:
+For the model we used a Resnet-like [...]
+
+---------------------------------------------------------------------
