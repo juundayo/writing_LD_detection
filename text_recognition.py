@@ -4,12 +4,15 @@ import os
 import numpy as np
 import torch
 import cv2
+import subprocess
+import json
+import ckwrap
+import shutil
 import matplotlib.pyplot as plt
+from pathlib import Path
 from torchvision import transforms
 from skimage.transform import (hough_line, hough_line_peaks)
 from PIL import Image, ImageOps
-import ckwrap
-import shutil
 from skimage import io
 from collections import defaultdict
 
@@ -18,10 +21,14 @@ from data_loading import class_mapping
 
 # ----------------------------------------------------------------------------#
 
-MODEL_PATH = "/home/ml3/Desktop/Thesis/rs1_tt2_v2.pth"
+MODEL_PATH = "/home/ml3/Desktop/Thesis/Models/rs1_tt2_v2.pth"
 
-IMG_PATH = "/home/ml3/Desktop/Thesis/.venv/model_test.jpg"
-#IMG_PATH = "/home/ml3/Desktop/model_test2.JPG"
+VENV_PATH = "/home/ml3/Desktop/CRAFT/.venv"
+CRAFT_PATH = "/home/ml3/Desktop/CRAFT/.venv/CRAFT-pytorch-master/craft_test.py"
+CRAFT_RESULTS_PATH = "/home/ml3/Desktop/CRAFT/.venv/outputs/image_text_detection.txt"
+
+#IMG_PATH = "/home/ml3/Desktop/Thesis/.venv/model_test.jpg"
+IMG_PATH = "/home/ml3/Downloads/input3.jpg"
 
 DUMP = "/home/ml3/Desktop/Thesis/LetterDump"
 OUTPUT_FOLDER = "/home/ml3/Desktop/Thesis/LetterCrops"
@@ -32,7 +39,7 @@ IMG_WIDTH = 78
 # ----------------------------------------------------------------------------#
 
 class GreekTextRecognizer:
-    def __init__(self, model_path, device):
+    def __init__(self, device):
         # Creating the generated cropped image folder. 
         os.makedirs(DUMP, exist_ok=True)
 
@@ -53,7 +60,7 @@ class GreekTextRecognizer:
 
         # Loading the OCR model.
         self.device = device
-        self.model = self.load_model(model_path, len(class_mapping))
+        self.model = self.load_model(len(class_mapping))
 
         # Loading the dictionary.
         self.greek_dictionary = self.load_greek_dictionary(
@@ -84,7 +91,7 @@ class GreekTextRecognizer:
             transforms.Normalize([0.5], [0.5])
         ])
 
-    def load_model(self, model_path, num_classes):
+    def load_model(self, num_classes):
         model = OCR(num_classes=num_classes).to(self.device)
         model.load_state_dict(torch.load(MODEL_PATH))
         model.eval()
@@ -135,6 +142,11 @@ class GreekTextRecognizer:
 
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
         image = cv2.morphologyEx(image, cv2.MORPH_CLOSE, kernel)
+
+        # Sharpening.
+        #kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+        #image = cv2.filter2D(image, -1, kernel)
+        
         image = 255 - image # Inveting black and white.
 
         # Show the image
@@ -223,7 +235,7 @@ class GreekTextRecognizer:
             dist_list.append(dist)
             y0, y1 = (dist - origin * np.cos(angle)) / np.sin(angle)
             ax[2].plot(origin, (y0, y1), '-r')
-            line_coords.append((y0, y1))
+            line_coords.append((str(round(y0, 2)), str(round(y1, 2))))
 
         ax[2].set_xlim(origin)
         ax[2].set_ylim((image.shape[0], 0))
@@ -237,6 +249,7 @@ class GreekTextRecognizer:
 
         print(f"Average distance between lines: {avg_line_distance} pixels")
         print(f"Line coordinates:", line_coords)
+        print(f"Lines detected: ", len(line_coords))
         return avg_line_distance, line_coords
     
     def find_blocks(self, logo):
@@ -300,7 +313,8 @@ class GreekTextRecognizer:
                 is_tonos = False
                 if line_segments:
                     last_col = line_segments[-1][-1][1]
-                    if abs(col_idx - last_col) < 10:  # Tonos appears close to previous character.
+                    # Tonos appears close to previous character.
+                    if abs(col_idx - last_col) < 10:  
                         is_tonos = True
                 
                 if not is_tonos:
@@ -320,7 +334,8 @@ class GreekTextRecognizer:
         for i, (x1, x2, y1, y2) in enumerate(line_boundaries):
             cv2.rectangle(color_logo, (y1, x1), (y2, x2), (0, 255, 0), 1)
             label = f"Line {i+1}: [{y1},{x1}]→[{y2},{x2}]"
-            cv2.putText(color_logo, label, (y1, x1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+            cv2.putText(color_logo, label, (y1, x1 - 5), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
 
         plt.figure(figsize=(10, 8))
         plt.imshow(cv2.cvtColor(color_logo, cv2.COLOR_BGR2RGB))
@@ -577,13 +592,13 @@ class GreekTextRecognizer:
         plt.title("Original Character")
         plt.axis('off')
 
-        # Transform and prepare for model
+        # Transforming and preparing for the model.
         char_pil = Image.fromarray(char_image).convert('L')
         transformed_img = self.transform(char_pil)
         
-        # Prepare transformed image for display
+        # Preparing transformed image for display.
         img_to_show = transformed_img.squeeze().cpu().numpy()
-        img_to_show = (img_to_show * 0.5) + 0.5  # Undo normalization
+        img_to_show = (img_to_show * 0.5) + 0.5  # Undoing normalization.
         img_to_show = np.clip(img_to_show, 0, 1)
         
         # Transformed image
@@ -596,7 +611,7 @@ class GreekTextRecognizer:
         plt.tight_layout()
         plt.show()
         
-        # Continue with recognition
+        # Continuing with recognition.
         char_tensor = transformed_img.unsqueeze(0).to(self.device)
         
         with torch.no_grad():
@@ -676,19 +691,23 @@ class GreekTextRecognizer:
         height between each notebook line are initialized 
         in __init__ to avoid clutter.
         """
-        # Segments characters.
+        # Segments words and saves them as PNGs in LetterDump.
         self.segment_words(self.img_no_lines, self.block_coords)
         print("Character segmentation completed.")
         
-        # Processes each character.
+        # Processes each word. (tightly resizes the x axis)
         for im in os.listdir(DUMP+"/"):
             self.clean_and_resize(DUMP+"/"+str(im))
 
-        # Printing the coordinates of each letter found.
+        # Printing the coordinates of each word found.
         for filename, coords in recognizer.letter_coord['letters'].items():
             print(f"{filename}: x={coords[0]}, y={coords[1]}")
 
-        self.crop_original_img()
+        # Using the coordinates of each letter to crop the original image
+        # without cv2 transforms. WIP, might not be needed. 
+        # TODO: when making the boxes in segment_words, crop the original
+        # image as well with the coords obtained.
+        #self.crop_original_img()
         
         # Recognizing each character added to the image folder.
         charPred = []
@@ -705,8 +724,8 @@ class GreekTextRecognizer:
 
 # ----------------------------------------------------------------------------#
 
-if __name__ == '__main__':    
-    recognizer = GreekTextRecognizer(MODEL_PATH, "cuda")
+if __name__ == '__main__':
+    recognizer = GreekTextRecognizer("cuda")
     result = recognizer.recognize_text()
     
     print("\nFinal Results:")
