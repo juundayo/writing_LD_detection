@@ -79,7 +79,9 @@ class GreekTextRecognizer:
         self.line_height, self.line_coords = self.line_distance(self.img_lines)
 
         # Calculating the coordinates of blocks of text recognized.
-        self.block_coords = self.find_blocks(self.img_no_lines)
+        #self.block_coords = self.find_blocks(self.img_no_lines)
+        self.block_coords = self.find_blocks(self.img_lines)
+
 
         # Detecting space boxes for characters.
         self.spaces = self.detect_spaces(self.img_no_lines, self.block_coords)
@@ -285,92 +287,60 @@ class GreekTextRecognizer:
         
     def find_blocks(self, logo):
         """
-        Detects lines of text in the image and returns
-        their bounding coordinates. We use a threshold
-        of width >= 5 to remove noise. (Dots, etc.)
+        Creates one bounding box per line spanning the full width of the line,
+        with proper vertical positioning based on notebook lines.
         """
+
+        VERTICAL_PADDING_RATIO = 0.03  # 3% of line height as padding
+        MIN_LINE_HEIGHT = 20           # Minimum height to consider a valid line
+
         line_boundaries = []
-        MIN_BLOCK_WIDTH = 5
+        line_ys = sorted([int((float(y0) + float(y1))/2) for (y0,y1) in self.line_coords])
         
-        def calculate_line_boundary(coords_list):
-            """
-            Calculating the bounding box for a 
-            complete line from character coordinates.
-            """
-            x_coords = [coord[0][0] for coord in coords_list]
-            y_coords = [j[1] for coord in coords_list for j in coord]
-            
-            xmin, xmax = min(x_coords), max(x_coords)
-            ymin, ymax = min(y_coords), max(y_coords)
-            
-            # Adding a small padding to the boundaries.
-            padding = 3
-            return [xmin, xmax + padding, max(0, ymin - padding), ymax + padding]
+        # If no lines detected we use the whole image as one block.
+        if not line_ys:
+            return [[0, logo.shape[0], 0, logo.shape[1]]]
 
-        # Check 1 -> Detecting all potential character transitions.
-        transitions = []
-        for row_idx, row in enumerate(logo[1:-1, 1:-1]):
-            for col_idx in range(len(row) - 1):
-                current_pixel = row[col_idx]
-                next_pixel = row[col_idx + 1]
-                
-                # Transition points (background<->text).
-                if (current_pixel > 200 and next_pixel < 200) or \
-                (current_pixel < 200 and next_pixel > 200):
-                    transitions.append((row_idx + 1, col_idx + 1))  # +1 for border offset.
-        
-        # Check 2 -> Group transitions into lines with tonos awareness.
-        if transitions:
-            # Sorting transitions by row then column.
-            transitions.sort()
+        # Creating one box per line.
+        for i in range(len(line_ys)):
+            # Top boundary (current line position + padding).
+            padding = int(self.line_height * VERTICAL_PADDING_RATIO)
+            top = max(0, line_ys[i] - padding)
             
-            current_row = transitions[0][0]
-            line_segments = []
+            # Bottom boundary (next line or end of image).
+            if i < len(line_ys) - 1:
+                bottom = line_ys[i+1] + padding
+            else:
+                bottom = logo.shape[0]
             
-            for row_idx, col_idx in transitions:
-                # Checking if we've moved to a new line.
-                if abs(row_idx - current_row) > self.line_height * 1.1:
-                    if line_segments:
-                        boundary = calculate_line_boundary(line_segments)
-                        block_width = boundary[3] - boundary[2] # ymax - ymin.
-
-                        if block_width >= MIN_BLOCK_WIDTH:
-                            line_boundaries.append(boundary)
-
-                        line_segments = []
-                    current_row = row_idx
+            # Skipping if the line height is too small.
+            if (bottom - top) < MIN_LINE_HEIGHT:
+                continue
                 
-                # Checking if this is likely a tonos (small vertical displacement).
-                is_tonos = False
-                if line_segments:
-                    last_col = line_segments[-1][-1][1]
-                    # Tonos appears close to previous character.
-                    if abs(col_idx - last_col) < 10:  
-                        is_tonos = True
-                
-                if not is_tonos:
-                    line_segments.append([(row_idx, col_idx)])
-            
-            # Adding the last line.
-            if line_segments:
-                boundary = calculate_line_boundary(line_segments)
-                block_width = boundary[3] - boundary[2]
-                if block_width >= MIN_BLOCK_WIDTH:
-                    line_boundaries.append(boundary)
-                
-        print("Line block coordinates:", line_boundaries)
+            line_boundaries.append([
+                top,           # y1
+                bottom,        # y2
+                0,             # x1 (start at left edge)
+                logo.shape[1]  # x2 (end at right edge)
+            ])
 
+        # Visualization.
         color_logo = cv2.cvtColor(logo, cv2.COLOR_GRAY2BGR)
+        
+        # Drawing notebook lines (from the original image with lines).
+        for line_y in line_ys:
+            cv2.line(color_logo, (0, line_y), (color_logo.shape[1], line_y), 
+                    (255, 0, 0), 1)
+        
+        # Drawing text blocks.
+        for i, (y1, y2, x1, x2) in enumerate(line_boundaries):
+            cv2.rectangle(color_logo, (x1, y1), (x2, y2), (0, 255, 0), 1)
+            cv2.putText(color_logo, f"Line {i+1}", (x1 + 10, y1 + 20), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-        for i, (x1, x2, y1, y2) in enumerate(line_boundaries):
-            cv2.rectangle(color_logo, (y1, x1), (y2, x2), (0, 255, 0), 1)
-            label = f"Line {i+1}: [{y1},{x1}]→[{y2},{x2}]"
-            cv2.putText(color_logo, label, (y1, x1 - 5), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-
-        plt.figure(figsize=(10, 8))
+        plt.figure(figsize=(12, 8))
         plt.imshow(cv2.cvtColor(color_logo, cv2.COLOR_BGR2RGB))
-        plt.title("Detected Notebook Lines with Bounding Boxes")
+        plt.title("Full-width Line Boxes")
         plt.axis('off')
         plt.show()
 
@@ -378,12 +348,12 @@ class GreekTextRecognizer:
     
     def detect_spaces(self, logo, xycoords):
         """
-        Uses k-means clustering to detect spaces between words
-        based on vertical whitespace columns.
+        Uses k-means clustering to detect spaces between 
+        words based on vertical whitespace columns.
         """
         spaces = [0]
         SPACE_SENSITIVITY = 0.5  # Lower = more sensitive to small spaces (0.5-1.0).
-        MIN_SPACE_WIDTH = 2      # Absolute minimum pixels to consider as space.
+        MIN_SPACE_WIDTH = 100      # Absolute minimum pixels to consider as space.
 
         for y_start, y_end, x_start, x_end in xycoords:
             segment = self.black_and_white(logo[y_start:y_end, x_start:x_end])
