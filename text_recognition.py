@@ -181,8 +181,8 @@ class GreekTextRecognizer:
 
     def black_and_white(self, image):
         """
-        Converts grayscale image to strict black and white
-        using a threshold of 200.
+        Converts grayscale image to strict black 
+        and white using a threshold of 200.
         """
         threshold = 200
         binary_image = np.zeros_like(image)
@@ -191,67 +191,98 @@ class GreekTextRecognizer:
     
     def line_distance(self, image):
         '''
-        Dynamically detecting the lines of the input image using a
-        Hough transform to calculate the distance between each line. 
+        Dynamically detecting the lines of the 
+        input image using a Hough transform that 
+        is robust against duplicate lines.
         '''
-        angle_list = []
-        dist_list = []
-        line_coords = []
-
+        # Parameters for Hough line detection.
+        tested_angles = np.linspace(-np.pi/2, np.pi/2, 180, endpoint=False)
+        
+        # Performing the Hough transform.
         inverted = ~image
-        tested_angles = np.linspace(-np.pi / 2, np.pi / 2, 180)
-        hspace, theta, dist = hough_line(inverted, tested_angles)
-        _, q, d = hough_line_peaks(hspace, theta, dist)
-
-        _, axes = plt.subplots(1, 3, figsize=(15, 6))
-        ax = axes.ravel()
-        ax[0].imshow(inverted, cmap='gray')
-        ax[0].set_title('Input image')
-        ax[0].set_axis_off()
-        ax[1].imshow(np.log(1 + hspace),
-                extent=[np.rad2deg(theta[-1]), np.rad2deg(theta[0]), 
-                        dist[-1], dist[0]], cmap='gray', aspect=1/1.5)
-        ax[1].set_title('Hough transform')
-        ax[1].set_xlabel('Angles (degrees)')
-        ax[1].set_ylabel('Distance (pixels)')
-        ax[1].axis('image')
-        ax[2].imshow(inverted, cmap='gray')
-
-        # Sorting the lines by their distance (y-coordinate).
-        origin = np.array((0, inverted.shape[1]))
-        sorted_indices = np.argsort(d)
-        sorted_distances = d[sorted_indices]
-        sorted_angles = q[sorted_indices]
-
-        line_distances = []
-        for i in range(1, len(sorted_distances)):
-            line_distances.append(sorted_distances[i] - sorted_distances[i-1])
-
+        hspace, theta, dist_array = hough_line(inverted, theta=tested_angles)  # Renamed to dist_array
+        
+        # Getting peaks.
+        _, angles, distances = hough_line_peaks(
+            hspace, theta, dist_array,
+            min_distance=5,
+            min_angle=5,
+            threshold=0.4 * np.max(hspace)
+        )
+        
+        # Convert to numpy arrays.
+        if np.isscalar(distances):
+            distances = np.array([distances])
+        if np.isscalar(angles):
+            angles = np.array([angles])
+        
+        # Sorting lines by distance (y-coordinate).
+        sorted_indices = np.argsort(distances)
+        sorted_distances = distances[sorted_indices]
+        sorted_angles = angles[sorted_indices]
+        
+        # Filtering out nearly identical lines.
+        unique_lines = []
+        prev_dist = -np.inf
+        min_line_separation = max(2, 0.05 * image.shape[0])
+        
+        for curr_dist, angle in zip(sorted_distances, sorted_angles):
+            if abs(curr_dist - prev_dist) >= min_line_separation:
+                unique_lines.append((curr_dist, angle))
+                prev_dist = curr_dist
+        
         # Calculating the average distance between lines.
+        line_distances = []
+        line_coords = []
+        if len(unique_lines) > 1:
+            line_distances = [unique_lines[i][0] - unique_lines[i-1][0] 
+                            for i in range(1, len(unique_lines))]
+        
         avg_line_distance = np.mean(line_distances) if line_distances else 0
-
-        for angle, dist in zip(sorted_angles, sorted_distances):
-            angle_list.append(angle)
-            dist_list.append(dist)
-            y0, y1 = (dist - origin * np.cos(angle)) / np.sin(angle)
-            ax[2].plot(origin, (y0, y1), '-r')
-            line_coords.append((str(round(y0, 2)), str(round(y1, 2))))
-
-        ax[2].set_xlim(origin)
-        ax[2].set_ylim((image.shape[0], 0))
-        ax[2].set_axis_off()
-        ax[2].set_title('Detected lines')
-        plt.tight_layout()
-        plt.show()
-
-        # Storing the line coordinates for later use.
-        self.detected_lines = sorted_distances
-
-        print(f"Average distance between lines: {avg_line_distance} pixels")
-        print(f"Line coordinates:", line_coords)
-        print(f"Lines detected: ", len(line_coords))
+        
+        # Visualization.
+        if True:
+            fig, axes = plt.subplots(1, 3, figsize=(15, 6))
+            ax = axes.ravel()
+            
+            # Input image
+            ax[0].imshow(inverted, cmap='gray')
+            ax[0].set_title('Input image')
+            ax[0].set_axis_off()
+            
+            hspace_display = np.log(1 + hspace.T) 
+            ax[1].imshow(hspace_display, 
+                        extent=[np.rad2deg(theta[0]), np.rad2deg(theta[-1]),
+                                dist_array[0], dist_array[-1]],
+                        aspect='auto', cmap='gray')
+            ax[1].set_title('Hough Transform Space')
+            ax[1].set_xlabel('Angle (degrees)')
+            ax[1].set_ylabel('Distance (pixels)')
+            
+            # Detected lines on original image.
+            ax[2].imshow(inverted, cmap='gray')
+            origin = np.array((0, inverted.shape[1]))
+            
+            for curr_dist, angle in unique_lines:
+                y0, y1 = (curr_dist - origin * np.cos(angle)) / np.sin(angle)
+                ax[2].plot(origin, (y0, y1), '-r')
+                line_coords.append((str(round(y0, 2)), str(round(y1, 2))))
+            
+            ax[2].set_xlim(origin)
+            ax[2].set_ylim((inverted.shape[0], 0))
+            ax[2].set_axis_off()
+            ax[2].set_title(f'Detected {len(unique_lines)} lines')
+            
+            plt.tight_layout()
+            plt.show()
+        
+        # Storing the detected lines.
+        self.detected_lines = [dist for dist, _ in unique_lines]
+        
+        print(f"Average distance between lines: {avg_line_distance:.2f} pixels")
+        print(f"Lines detected: {len(unique_lines)}")
         return avg_line_distance, line_coords
-    
+        
     def find_blocks(self, logo):
         """
         Detects lines of text in the image and returns
