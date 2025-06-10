@@ -1,4 +1,4 @@
-An AI OCR model trained on greek letter recognition.
+An AI OCR model trained on greek letter recognition using PyTorch.
 The final code will take written text as an input and then recognize 
 if the person who wrote it has dysorthographia or/and dysgraphia.
 
