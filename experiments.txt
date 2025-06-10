@@ -27,7 +27,7 @@ Our method:     ??/??
 
 ---------------------------------------------------------------------
 
-Dataset:
+Handwritten Greek Character Dataset:
 0. Need for data.
 The first step of handwritten word analysis is to use a robust OCR model, designed for handwritten text and most importantly, Greek character recognition. We experimented with a variety of OCR models that are widely used such as Tesseract [CITE], but were not satisfied by its results and found that creating our own model would be most beneficial for this project.
 However, this arose a need for handwritten Greek character letters written in a variety of different handwritings to use as data that will be learned by our model. 
@@ -36,7 +36,7 @@ However, this arose a need for handwritten Greek character letters written in a 
 For the dataset we asked ~100 people, aged from 18 to 60, to write the Greek alphabet in lowercase and uppercase, as well as each possible tonos and dialitika(??) variants. It should be noted that each person who contributed to the dataset filled out a consent form that included their name, signature and date, stating their permission to have their handwritten characters used for this project. 
 
 2. Collected data form.
-Each character was separated by the others by a large horizontal space and a vertical notebook line, making it easier to crop individual characters that exceed the notebook line such as (INSERT RO AND KSI) to avoid them being connected with other letters, for example in the notebook line above or under. 
+Each character we collected was separated by the others by a large horizontal space and a vertical notebook line, making it easier to crop individual characters that exceed the notebook line such as ρ (ro) and ξ (ksi) to avoid them being connected with other letters in the line above and/or below.
 
 3. Data pre-processing.
 i. Dataset format.
@@ -49,11 +49,18 @@ a. Tightly cropping both the x and y axis.
 b. Tightly cropping the x axis and including both of the notebook lines above and below the letter.
 
 ii. Augmentations and loading.
-Having collected all characters and labeled them in their corresponding folders, we proceeded to create a script that loads the data and creates augmentations of each image. Specifically, we created 6000 augmentations with the following attributes:
+Having only 100 images for each class would be insufficient and limit the training process greatly, something that we solved by creating augmentated versions of each image.
+
+After having collected all characters and labeled them in their corresponding folders, we proceeded to create a script that loads the data and respective classes, and creates augmentations for each image. Specifically, we created 6000 augmentations of every letter input with the following attributes to make up for the need of data and variations:
 a. Random (-7, 7) degree rotation.
 b. Random (1, 1.5) contrast added.
-The augmentations mentioned above were created because of the lack of data and need for variations - and ultimately more robust training. Because of these augmentations, every letter folder in the final dataset contained around 600,000 images. 
+Because of these augmentations, every letter folder in the final dataset contained around 600,000 images. 
 It should be stated that we also applied a large variety of other dynamic augmentations while the model was training, to reinforce the learning process and ultimately increase the mode's accuracy by ~13%. Further analysis of said segmentations can be found in the Model Training section. 
+
+iii. Train-Test split.
+In order pass the dataset to our OCR training model, there is a need to split the data into Training and Testing. To do this we iterated through each data folder individually and performed a split there dynamically to account for potential disorder in the number of data that each folder contains.
+After experimenting with the train-split ratio, we found that 0.2 (80% training - 20% testing) worked best for our model.
+It should be mentioned that every augmentation of each image is part of either the training or testing dataset and do not overlap with each other, something that would make the training process problematic.
 
 ---------------------------------------------------------------------
 
