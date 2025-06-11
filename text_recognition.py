@@ -352,8 +352,10 @@ class GreekTextRecognizer:
         words based on vertical whitespace columns.
         """
         spaces = [0]
-        SPACE_SENSITIVITY = 0.5  # Lower = more sensitive to small spaces (0.5-1.0).
-        MIN_SPACE_WIDTH = 100      # Absolute minimum pixels to consider as space.
+        SPACE_SENSITIVITY = 0.5       # Lower = more sensitive to small spaces (0.5-1.0).
+        MIN_SPACE_WIDTH = 100         # Absolute minimum pixels to consider as space.
+        WORD_SPACE_WIDTH_RATIO = 0.4  # Ratio of line_height for word separation.
+        MIN_GAP_RATIO = 0.5           # Minimum ratio of line_height to be considered.
 
         for y_start, y_end, x_start, x_end in xycoords:
             segment = self.black_and_white(logo[y_start:y_end, x_start:x_end])
@@ -402,13 +404,30 @@ class GreekTextRecognizer:
     
     def segment_words(self, image, finalXY):
         """
-        Segments words from line segments using space classification (1=intra-word, 2=inter-word)
-        and saves each word as a separate PNG file.
+        Segments words from line segments using space 
+        classification (1=intra-word, 2=inter-word) and 
+        saves each word as a separate PNG file.
         """
         self.char_positions = []
-        MIN_WORD_WIDTH = 5        # Minimum width to consider a word segment.
-        MIN_INTER_WORD_SPACE = 20 # Pixel difference between words.
+        MIN_WORD_WIDTH = 5         # Minimum width to consider a word segment.
+        WORD_SPACE_WIDTH_RATIO = 0.4  # Ratio of line_height for word separation.
+        MIN_GAP_RATIO = 0.5           # Minimum ratio of line_height to be considered.
 
+        if self.line_height > 0:
+            word_separation_threshold = self.line_height * WORD_SPACE_WIDTH_RATIO
+            min_whitespace_pixels = self.line_height * MIN_GAP_RATIO
+        else:
+            word_separation_threshold = 20  
+            min_whitespace_pixels = 2 
+
+        # Ensuring min_whitespace_pixels is reasonably 
+        # smaller than word_separation_threshold.
+        if (min_whitespace_pixels >= word_separation_threshold) and \
+           (self.line_height <= 0):
+            min_whitespace_pixels = max(1, word_separation_threshold - 1)
+        elif (min_whitespace_pixels >= word_separation_threshold) and \
+             (self.line_height > 0):
+            min_whitespace_pixels = max(1, self.line_height * (WORD_SPACE_WIDTH_RATIO / 2) )
 
         for line_idx, (top, bottom, left, right) in enumerate(finalXY):
             line_region = image[top:bottom, left:right]
@@ -424,20 +443,20 @@ class GreekTextRecognizer:
             for col in range(width):
                 column = segment[:, col]
                 if np.any(column == 0):  # Contains text.
-                    if white_count > 0:
+                    if white_count >= min_whitespace_pixels:
                         whitespace_lengths.append((white_count, column_pos - white_count))
                         white_count = 0
                 else:  # Whitespace.
                     white_count += 1
                 column_pos += 1
 
-            if white_count > 0:
+            if white_count > min_whitespace_pixels:
                 whitespace_lengths.append((white_count, column_pos - white_count))
             
             classified_spaces = []
             for length, pos in whitespace_lengths:
                 if length > 0:
-                    space_type = 2 if length >= MIN_INTER_WORD_SPACE else 1
+                    space_type = 2 if length >= word_separation_threshold else 1
                     classified_spaces.append((pos, pos + length, space_type))
                 else:
                     classified_spaces.append((pos, pos + length, 0))
