@@ -1,6 +1,11 @@
 # ----------------------------------------------------------------------------#
 
 import collections
+import time
+
+# ----------------------------------------------------------------------------#
+
+TESTING = True 
 
 # ----------------------------------------------------------------------------#
 
@@ -8,6 +13,8 @@ class TrieNode:
     def __init__(self):
         self.children = collections.defaultdict(TrieNode)
         self.is_end = False
+
+# ----------------------------------------------------------------------------#
 
 class Trie:
     def __init__(self):
@@ -91,5 +98,11 @@ load_greek_dictionary('/home/ml3/Desktop/Thesis/.venv/Data/filtered_dictionary.d
 # ----------------------------------------------------------------------------#
 
 # Testing!
-print(greek_trie.search("αυτός"))
-#print(greek_trie.startsWith("γει"))
+if TESTING:
+    start = time.time()
+    print(greek_trie.search("αυτός"))
+    end = time.time()
+    legth = end - start
+    print(f"Trie search took {legth:.6f} seconds.")
+
+    print(greek_trie.startsWith("εκείν"))
