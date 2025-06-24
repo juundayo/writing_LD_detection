@@ -4,9 +4,7 @@ import os
 import numpy as np
 import torch
 import cv2
-import subprocess
-import json
-import ckwrap
+import time
 import shutil
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -35,6 +33,8 @@ OUTPUT_FOLDER = "/home/ml3/Desktop/Thesis/LetterCrops"
 
 IMG_HEIGHT = 512
 IMG_WIDTH = 78
+
+SEARCH_TEST = False
 
 # ----------------------------------------------------------------------------#
 
@@ -66,6 +66,14 @@ class GreekTextRecognizer:
         self.greek_dictionary = self.load_greek_dictionary(
             '/home/ml3/Desktop/Thesis/.venv/Data/filtered_dictionary.dic'
         ) 
+
+        if SEARCH_TEST:
+            start = time.time()
+            print(self.word_exists("αυτός"))
+            end = time.time()
+            legth = end - start
+            print(f"Simple search took {legth:.6f} seconds.")
+            exit(0)
 
         # Inverse mapping from index to class name.
         self.classes = sorted(class_mapping.values())
@@ -102,12 +110,19 @@ class GreekTextRecognizer:
         return model
     
     def load_greek_dictionary(self, dict_path):
-        """Loading the Greek dictionary into a set for faster lookup."""
+        """
+        Loading the Greek dictionary 
+        into a set for faster lookup. 
+        Dictionary format: word frequency
+        """
         dictionary = set()
-
         with open(dict_path, 'r', encoding='utf-8') as f:
             for line in f:
-                word = line.strip().lower()
+                parts = line.strip().split()
+                if not parts:
+                    continue
+
+                word = parts[0]
                 if word:
                     dictionary.add(word)
 
@@ -119,6 +134,16 @@ class GreekTextRecognizer:
             return f"*{word}*"
         
         return word
+
+    def word_exists(self, word):
+        """
+        Checks if a word exists in the Greek dictionary.
+        Returns True if it exists, False otherwise.
+        """
+        if (word in self.greek_dictionary):
+            return True
+        else:
+            return False
         
     def input_with_lines(self, IMG_PATH):
         """
@@ -409,7 +434,7 @@ class GreekTextRecognizer:
         saves each word as a separate PNG file.
         """
         self.char_positions = []
-        MIN_WORD_WIDTH = 5         # Minimum width to consider a word segment.
+        MIN_WORD_WIDTH = 5            # Minimum width to consider a word segment.
         WORD_SPACE_WIDTH_RATIO = 0.4  # Ratio of line_height for word separation.
         MIN_GAP_RATIO = 0.5           # Minimum ratio of line_height to be considered.
 
