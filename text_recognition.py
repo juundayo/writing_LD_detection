@@ -69,7 +69,7 @@ class GreekTextRecognizer:
 
         if SEARCH_TEST:
             start = time.time()
-            print(self.word_exists("αυτός"))
+            print(self.word_exists("αποτελεσματική"))
             end = time.time()
             legth = end - start
             print(f"Simple search took {legth:.6f} seconds.")
@@ -89,7 +89,6 @@ class GreekTextRecognizer:
         # Calculating the coordinates of blocks of text recognized.
         #self.block_coords = self.find_blocks(self.img_no_lines)
         self.block_coords = self.find_blocks(self.img_lines)
-
 
         # Detecting space boxes for characters.
         self.spaces = self.detect_spaces(self.img_no_lines, self.block_coords)
@@ -128,9 +127,9 @@ class GreekTextRecognizer:
 
         print('Loaded the dictionary!')
         return dictionary
-    
+
     def mark_unknown(self, word, confidence=0):
-        if (word.lower() not in self.greek_dictionary) or (confidence < 0.7):
+        if (word.lower() not in self.greek_dictionary) or (confidence < 0.70):
             return f"*{word}*"
         
         return word
@@ -227,7 +226,7 @@ class GreekTextRecognizer:
         
         # Performing the Hough transform.
         inverted = ~image
-        hspace, theta, dist_array = hough_line(inverted, theta=tested_angles)  # Renamed to dist_array
+        hspace, theta, dist_array = hough_line(inverted, theta=tested_angles) 
         
         # Getting peaks.
         _, angles, distances = hough_line_peaks(
@@ -302,6 +301,7 @@ class GreekTextRecognizer:
             
             plt.tight_layout()
             plt.show()
+
         
         # Storing the detected lines.
         self.detected_lines = [dist for dist, _ in unique_lines]
@@ -312,10 +312,11 @@ class GreekTextRecognizer:
         
     def find_blocks(self, logo):
         """
-        Creates one bounding box per line spanning the full width of the line,
-        with proper vertical positioning based on notebook lines.
+        Creates one bounding box per 1.5 notebook lines.
+        For example, for an image with 5 lines (2 of which
+        include text), it will create 2 boxes from 0 to 1.5
+        and 2 to 3.5.
         """
-
         VERTICAL_PADDING_RATIO = 0.03  # 3% of line height as padding
         MIN_LINE_HEIGHT = 20           # Minimum height to consider a valid line
 
@@ -326,15 +327,17 @@ class GreekTextRecognizer:
         if not line_ys:
             return [[0, logo.shape[0], 0, logo.shape[1]]]
 
+        half_line_height = int(self.line_height * 0.5)
+
         # Creating one box per line.
-        for i in range(len(line_ys)):
+        for i in range(0, len(line_ys), 2):
             # Top boundary (current line position + padding).
             padding = int(self.line_height * VERTICAL_PADDING_RATIO)
             top = max(0, line_ys[i] - padding)
             
             # Bottom boundary (next line or end of image).
             if i < len(line_ys) - 1:
-                bottom = line_ys[i+1] + padding
+                bottom = line_ys[i+1] + padding + half_line_height
             else:
                 bottom = logo.shape[0]
             
@@ -360,7 +363,7 @@ class GreekTextRecognizer:
         # Drawing text blocks.
         for i, (y1, y2, x1, x2) in enumerate(line_boundaries):
             cv2.rectangle(color_logo, (x1, y1), (x2, y2), (0, 255, 0), 1)
-            cv2.putText(color_logo, f"Line {i+1}", (x1 + 10, y1 + 20), 
+            cv2.putText(color_logo, f"Block {i+1}", (x1 + 10, y1 + 20), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         plt.figure(figsize=(12, 8))
@@ -368,6 +371,7 @@ class GreekTextRecognizer:
         plt.title("Full-width Line Boxes")
         plt.axis('off')
         plt.show()
+        plt.imsave("line_boxes.png", color_logo)
 
         return line_boundaries
     
@@ -503,8 +507,8 @@ class GreekTextRecognizer:
                         rows_with_ink = np.any(word_region < 200, axis=1)
                         y_positions = np.where(rows_with_ink)[0]
                         
-                        abs_x1 = left + word_start
-                        abs_x2 = left + word_end
+                        abs_x1 = word_start
+                        abs_x2 = word_end
                         abs_y1 = top + (y_positions.min() if len(y_positions) > 0 else 0)
                         abs_y2 = top + (y_positions.max() + 1 if len(y_positions) > 0 else (bottom - top))
 
@@ -527,8 +531,8 @@ class GreekTextRecognizer:
                 rows_with_ink = np.any(word_region < 200, axis=1)
                 y_positions = np.where(rows_with_ink)[0]
                 
-                abs_x1 = left + word_start
-                abs_x2 = left + width
+                abs_x1 = word_start
+                abs_x2 = word_start + width 
                 abs_y1 = top + (y_positions.min() if len(y_positions) > 0 else 0)
                 abs_y2 = top + (y_positions.max() + 1 if len(y_positions) > 0 else (bottom - top))
 
@@ -573,12 +577,12 @@ class GreekTextRecognizer:
                     
             for i in range(img_array.shape[1]-1, -1, -1):
                 if has_black_pixels(img_array[:, i]):
-                    x2 = min(img_array.shape[1], i+2)
+                    x2 = min(img_array.shape[1], i+3)
                     break
             
             # Calculating new absolute x coordinates.
             new_x1 = orig_x1 + x1
-            new_x2 = orig_x1 + x2
+            new_x2 = min(orig_x2, orig_x1 + x2)
             
             # Finding actual vertical bounds after cleaning.
             rows_with_ink = np.any(img_array < 200, axis=1)
