@@ -1,17 +1,21 @@
+# ----------------------------------------------------------------------------#
+
 import os
 import cv2
+import random
 import numpy as np
 from torch.utils.data import Dataset
 from PIL import Image, ImageEnhance
-import random
+import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 
 from class_renaming import class_mapping
 
 # ----------------------------------------------------------------------------#
 
-AUGMENTATIONS = 2000
+AUGMENTATIONS = 2500
 SPACE_AUGMENTATIONS = 2500
+RANDOM_STATE = 222
 AUGMENT = False
 
 # ----------------------------------------------------------------------------#
@@ -23,9 +27,9 @@ File layout:
     currentfolder/Data/GreekLetters/
 
     → Inside GreekLetters can be found two folders named CAPS and SMALL.
-        →　Both folders contain two separate folders named SingleCharacters and
+        → Both folders contain two separate folders named SingleCharacters and
           DoubleCharacters.
-          →　Inside each one of the folders can be found seperate folders, each
+          → Inside each one of the folders can be found seperate folders, each
             containing a single letter or a combination of two letters - 
             depending on the folder.
 '''
@@ -48,7 +52,7 @@ def dataAugmentation(image_path, aug_number):
             img_array = np.array(original_img)
             
             # Image center.
-            height, width = img_array.shape[:2]
+            height, width = img_array.shape[:2] 
             image_center = (width/2, height/2)
             
             # Rotation matrix.
@@ -97,11 +101,10 @@ class GreekLetterDataset(Dataset):
         self.class_to_idx = {cls: i for i, cls in enumerate(self.classes)}
         self.original_to_idx = {orig_cls: i for i, orig_cls in enumerate(all_classes)}
         
-
     def iterate_through(self):
         images_by_class = {}
-        character_types = ['SMALL', 'CAPS', 'SPECIAL']
-        sub_folders = ['SingleCharacters', 'Symbols']
+        character_types = ['SMALL', 'CAPS']
+        sub_folders = ['SingleCharacters']
 
         for char_type in character_types:
             char_type_dir = os.path.join(self.root_dir, char_type)
@@ -140,7 +143,7 @@ class GreekLetterDataset(Dataset):
 
         for class_name, image_paths in all_images.items():
             train_imgs, test_imgs = train_test_split(
-                image_paths, test_size=0.3, random_state=1
+                image_paths, test_size=0.2, random_state=RANDOM_STATE
             )
 
             train_dataset.extend([(path, class_name) for path in train_imgs])
@@ -150,6 +153,7 @@ class GreekLetterDataset(Dataset):
             if AUGMENT:
                 aug_number = SPACE_AUGMENTATIONS if class_name == 'space' else AUGMENTATIONS
 
+                print("Creating augmentations...")
                 # Augmentations in the train set.
                 for path in train_imgs:
                     for i in range(aug_number):
@@ -174,7 +178,6 @@ class GreekLetterDataset(Dataset):
                             os.rename(aug_path, renamed_path)
                             test_dataset.append((renamed_path, class_name))
 
-            
         if AUGMENT:
             print(f"Created augmentations successfully!")
 
@@ -224,3 +227,76 @@ class GreekLetterSubDataset(Dataset):
     
 # ----------------------------------------------------------------------------#
 
+def plot_augmentation_samples(root_dir, num_folders=3, num_augmentations=3):
+    """
+    Plot original images and their respective
+    augmentations from random folders.
+    """
+    character_folders = []
+    
+    # Searching through CAPS and SMALL folders.
+    for char_type in ['CAPS', 'SMALL']:
+        char_type_dir = os.path.join(root_dir, char_type, 'SingleCharacters')
+        if not os.path.exists(char_type_dir):
+            continue
+            
+        for letter_folder in os.listdir(char_type_dir):
+            letter_path = os.path.join(char_type_dir, letter_folder)
+            if os.path.isdir(letter_path):
+                character_folders.append(letter_path)
+    
+    # Randomly selecting folders.
+    selected_folders = random.sample(character_folders, min(num_folders, len(character_folders)))
+    
+    fig, axes = plt.subplots(num_folders, 4, figsize=(15, 5*num_folders))
+    if num_folders == 1:
+        axes = [axes] 
+    
+    for i, folder in enumerate(selected_folders):
+        all_files = [f for f in os.listdir(folder) if f.endswith(('.png', '.jpg', '.jpeg'))]
+        
+        # Finding original images (those without '_aug' in name).
+        original_images = [f for f in all_files if '_aug' not in f]
+        
+        if not original_images:
+            print(f"No original images found in {folder}")
+            continue
+            
+        # Selecting a random original image.
+        original_img_name = random.choice(original_images)
+        original_img_path = os.path.join(folder, original_img_name)
+        
+        # Finding augmentations for the selected image.
+        base_name, ext = os.path.splitext(original_img_name)
+        augmentations = [f for f in all_files if f.startswith(base_name) and '_aug' in f]
+        
+        # Selecting random augmentations.
+        selected_augmentations = random.sample(augmentations, min(num_augmentations, len(augmentations)))
+        
+        # Loading the images.
+        original_img = Image.open(original_img_path)
+        aug_imgs = [Image.open(os.path.join(folder, aug)) for aug in selected_augmentations]
+        
+        # Plotting the original in top left.
+        axes[i][0].imshow(original_img, cmap='gray')
+        axes[i][0].set_title('Original')
+        axes[i][0].axis('off')
+        
+        for j, aug_img in enumerate(aug_imgs, start=1):
+            axes[i][j].imshow(aug_img, cmap='gray')
+            axes[i][j].set_title(f'Augmentation {j}')
+            axes[i][j].axis('off')
+        
+        for j in range(len(aug_imgs)+1, 4):
+            axes[i][j].axis('off')
+    
+    plt.tight_layout()
+    plt.savefig('augmentation_samples.png')
+    plt.show()
+    print("Saved plot as 'augmentation_samples.png'")
+
+# ----------------------------------------------------------------------------#
+
+if __name__ == '__main__':
+    root_directory = '/home/ml3/Desktop/Thesis/.venv/Data/GreekLetters' 
+    plot_augmentation_samples(root_directory)
