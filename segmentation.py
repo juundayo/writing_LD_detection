@@ -5,15 +5,37 @@ import matplotlib.pyplot as plt
 
 # ----------------------------------------------------------------------------#
 
+class Rectangle:
+    def __init__(self, x, y, x2, y2, area):
+        self.x = x
+        self.y = y
+        self.x2 = x2
+        self.y2 = y2
+
+        self.area = area
+
+# ----------------------------------------------------------------------------#
+
+def rectangleCleaning(rectlist, recaverage):
+    '''
+    Removing the recntangles that are too
+    small besed on an adaptive average score.
+    '''
+    for rect in rectlist[:]:  # Notice the [:] which creates a copy
+        if rect.area < recaverage * 0.2:
+            rectlist.remove(rect)
+    
+# ----------------------------------------------------------------------------#
+
 def preProcessing(myImage):
     grayImg = cv2.cvtColor(myImage, cv2.COLOR_BGR2GRAY)
     # cv2.imshow('Gray Image', grayImg)
     # cv2.waitKey()
     ret, thresh1 = cv2.threshold(grayImg, 0, 255, 
                                  cv2.THRESH_OTSU | cv2.THRESH_BINARY_INV)
-    cv2.imshow('After threshold', thresh1)
-    cv2.waitKey()
-    print(f'The threshold valua applied to the image is: {ret} ')
+    #cv2.imshow('After threshold', thresh1)
+    #cv2.waitKey()
+    print(f'The threshold value applied to the image is: {ret} ')
     horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (18, 18))
     dilation = cv2.dilate(thresh1, horizontal_kernel, iterations=1)
     horizontal_contours, hierarchy = cv2.findContours(dilation, 
@@ -22,46 +44,11 @@ def preProcessing(myImage):
     im2 = myImage.copy()
     for cnt in horizontal_contours:
         x, y, w, h = cv2.boundingRect(cnt)
-        rect = cv2.rectangle(im2, (x, y), (x + w, y + h), (255, 255, 255), 0)
-    im2= seg_word(rect)
+        rect = cv2.rectangle(im2, (x, y), (x + w, y + h), (0, 0, 0), 0)
+
+    im2 = character_seg(rect)
 
     return im2
-
-# ----------------------------------------------------------------------------#
-
-def seg_word(wordImage):
-    # Gray scaling the input image.
-    grayImg = cv2.cvtColor(wordImage, cv2.COLOR_BGR2GRAY)
-
-    # Binarize the gray image w/ the OTSU algorithm.
-    ret, thresh2 = cv2.threshold(grayImg, 0, 255, 
-                                 cv2.THRESH_OTSU | cv2.THRESH_BINARY_INV)
-
-    # Creating a Structuring Element size of 8*10 for the vertical contouring.
-    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (8, 10))
-
-    # Applying Dilation for once only.
-    dilation = cv2.dilate(thresh2, vertical_kernel, iterations=1)
-
-    # Finding the vertical contours.
-    vertical_contours, hierarchy = cv2.findContours(dilation, 
-                                                    cv2.RETR_EXTERNAL, 
-                                                    cv2.CHAIN_APPROX_NONE)
-    word_img = wordImage.copy()
-
-    # Running through each contour and extracting the bounding box.
-    for cnt in vertical_contours:
-        # Computing the minimum rectangle.
-        x, y, w, h = cv2.boundingRect(cnt)
-
-        # Drawing a rectangle from the top left to the bottom right 
-        # with the given coordinates x,y and height and width.
-        rect = cv2.rectangle(word_img, (x, y), (x + w, y + h), (0, 0, 255), 0)
-
-    # Applying the character segmentation and returning the output image.
-    word_img= character_seg(rect)
-
-    return word_img
 
 # ----------------------------------------------------------------------------#
 
@@ -85,15 +72,34 @@ def character_seg(img):
                                            cv2.CHAIN_APPROX_SIMPLE)
     
     # Iterating through each contour and extracting the bounding box.
+    iteration = 0
+    runningAverage = 0
+    reclist = []
     for contour in contours:
+        iteration += 1
+
         (x, y, w, h) = cv2.boundingRect(contour)
-        cv2.rectangle(img, (x, y), (x + w, y + h), (0, 0, 0 ), 2)
+        area = (w * h)
+        print(w, h, area)
+
+        rec = Rectangle(x, y, x + w, y + h, area)
+        reclist.append(rec)
+
+        # Calculating the new average.
+        runningAverage = runningAverage + (area - runningAverage) / iteration
+
+    rectangleCleaning(reclist, runningAverage)
+    print(f"The average area of the rectangles is: {runningAverage}")
+
+    for rect in reclist:
+        cv2.rectangle(img, (rect.x, rect.y), (rect.x2, rect.y2), (0, 255, 0), 2)
+
     return  img
 
 # ----------------------------------------------------------------------------#
 
 if __name__ == "__main__":
-    png = "/home/ml3/Downloads/input2.jpg"
+    png = "/home/ml3/Desktop/Thesis/two_mimir.jpg"
     
     image = cv2.imread(png)
     returnImage = preProcessing(image)
@@ -102,4 +108,4 @@ if __name__ == "__main__":
 
     plt.imshow(returnImage_rgb)
     plt.axis("off")
-    plt.savefig("output_otu.png", bbox_inches='tight', pad_inches=0)
+    plt.savefig("outputPUTPUTPUT.png", bbox_inches='tight', pad_inches=0)
