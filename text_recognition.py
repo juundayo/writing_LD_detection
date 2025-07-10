@@ -25,8 +25,8 @@ VENV_PATH = "/home/ml3/Desktop/CRAFT/.venv"
 CRAFT_PATH = "/home/ml3/Desktop/CRAFT/.venv/CRAFT-pytorch-master/craft_test.py"
 CRAFT_RESULTS_PATH = "/home/ml3/Desktop/CRAFT/.venv/outputs/image_text_detection.txt"
 
-#IMG_PATH = "/home/ml3/Desktop/Thesis/.venv/model_test.jpg"
-IMG_PATH = "/home/ml3/Downloads/input3.jpg"
+IMG_PATH = "/home/ml3/Desktop/Thesis/two_mimir.jpg"
+#IMG_PATH = "/home/ml3/Downloads/input3.jpg"
 
 DUMP = "/home/ml3/Desktop/Thesis/LetterDump"
 OUTPUT_FOLDER = "/home/ml3/Desktop/Thesis/LetterCrops"
@@ -179,7 +179,7 @@ class GreekTextRecognizer:
         plt.imshow(image, cmap='gray')
         plt.title("Thresholded Binary Image")
         plt.axis('off')
-        #plt.show()
+        plt.savefig("INPUT_WITH_LINES.png", bbox_inches='tight', pad_inches=0)
 
         return image
     
@@ -202,6 +202,7 @@ class GreekTextRecognizer:
         plt.title("Thresholded Binary Image")
         plt.axis('off')
         #plt.show()
+        plt.savefig("INPUT_WITHOUT_LINES.png", bbox_inches='tight', pad_inches=0)
 
         return binary
 
@@ -231,7 +232,7 @@ class GreekTextRecognizer:
         # Getting peaks.
         _, angles, distances = hough_line_peaks(
             hspace, theta, dist_array,
-            min_distance=5,
+            min_distance=20,
             min_angle=5,
             threshold=0.4 * np.max(hspace)
         )
@@ -301,13 +302,15 @@ class GreekTextRecognizer:
             
             plt.tight_layout()
             plt.show()
+            plt.savefig("HOUGH.png", bbox_inches='tight', pad_inches=0)
 
-        
         # Storing the detected lines.
         self.detected_lines = [dist for dist, _ in unique_lines]
         
         print(f"Average distance between lines: {avg_line_distance:.2f} pixels")
         print(f"Lines detected: {len(unique_lines)}")
+        print("LINE COORDS")
+        print(line_coords)
         return avg_line_distance, line_coords
         
     def find_blocks(self, logo):
@@ -371,7 +374,7 @@ class GreekTextRecognizer:
         plt.title("Full-width Line Boxes")
         plt.axis('off')
         plt.show()
-        plt.imsave("line_boxes.png", color_logo)
+        plt.imsave("BLOCKS.png", color_logo)
 
         return line_boundaries
     
