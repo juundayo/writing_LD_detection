@@ -58,6 +58,7 @@ class GreekTextRecognizer:
             'letters': {}
         }
 
+        ''' TODO: UNCOMMENT LATER
         # Loading the OCR model.
         self.device = device
         self.model = self.load_model(len(class_mapping))
@@ -66,6 +67,7 @@ class GreekTextRecognizer:
         self.greek_dictionary = self.load_greek_dictionary(
             '/home/ml3/Desktop/Thesis/.venv/Data/filtered_dictionary.dic'
         ) 
+        '''
 
         if SEARCH_TEST:
             start = time.time()
@@ -91,7 +93,7 @@ class GreekTextRecognizer:
         self.block_coords = self.find_blocks(self.img_lines)
 
         # Detecting space boxes for characters.
-        self.spaces = self.detect_spaces(self.img_no_lines, self.block_coords)
+        self.spaces = self.detect_spaces(self.img_lines, self.block_coords)
         
         # Transform applied to each generated cropped image.
         self.transform = transforms.Compose([
@@ -182,7 +184,10 @@ class GreekTextRecognizer:
         plt.savefig("INPUT_WITH_LINES.png", bbox_inches='tight', pad_inches=0)
 
         return image
-    
+
+# ----------------------------------------------------------------------------#
+
+    '''MIGHT GET REMOVED LATER'''
     def input_without_lines(self, IMG_PATH):
         """
         Processes the input image through grayscale conversion,
@@ -206,15 +211,23 @@ class GreekTextRecognizer:
 
         return binary
 
+# ----------------------------------------------------------------------------#
+
     def black_and_white(self, image):
         """
         Converts grayscale image to strict black 
-        and white using a threshold of 200.
+        and white using a threshold of 50.
         """
-        threshold = 200
-        binary_image = np.zeros_like(image)
-        binary_image[image > threshold] = 255
-        return binary_image
+        image = Image.open(image)
+        image_gray = ImageOps.grayscale(image)
+        image_array = np.array(image_gray)
+        threshold = 50
+        binary = np.where(image_array <= threshold, 0, 255).astype(np.uint8)
+        plt.title("")
+        plt.axis('off')
+        plt.imshow(binary, cmap='gray')
+        plt.savefig("blacknwhite.png", bbox_inches='tight', pad_inches=0)
+        return binary
     
     def line_distance(self, image):
         '''
@@ -312,7 +325,7 @@ class GreekTextRecognizer:
         print("LINE COORDS")
         print(line_coords)
         return avg_line_distance, line_coords
-        
+    
     def find_blocks(self, logo):
         """
         Creates one bounding box per 1.5 notebook lines.
@@ -320,52 +333,46 @@ class GreekTextRecognizer:
         include text), it will create 2 boxes from 0 to 1.5
         and 2 to 3.5.
         """
-        VERTICAL_PADDING_RATIO = 0.03  # 3% of line height as padding
+        VERTICAL_PADDING_RATIO = 0.07  # 7% of line height as padding
         MIN_LINE_HEIGHT = 20           # Minimum height to consider a valid line
 
-        line_boundaries = []
-        line_ys = sorted([int((float(y0) + float(y1))/2) for (y0,y1) in self.line_coords])
+        line_ys = sorted([(float(y0),float(y1)) for (y0,y1) in self.line_coords])
         
         # If no lines detected we use the whole image as one block.
         if not line_ys:
             return [[0, logo.shape[0], 0, logo.shape[1]]]
-
-        half_line_height = int(self.line_height * 0.5)
-
-        # Creating one box per line.
-        for i in range(0, len(line_ys), 2):
-            # Top boundary (current line position + padding).
-            padding = int(self.line_height * VERTICAL_PADDING_RATIO)
-            top = max(0, line_ys[i] - padding)
+        
+        interest = []
+        padding = int(self.line_height * VERTICAL_PADDING_RATIO)
+        
+        # Creating one box per two lines.
+        for i in range(0, len(line_ys)):
+            # Tops of area of interest.
+            top = int(max(0, max(line_ys[i][0], line_ys[i][1]) + padding))
             
-            # Bottom boundary (next line or end of image).
+            # Bottoms of area of interest.
             if i < len(line_ys) - 1:
-                bottom = line_ys[i+1] + padding + half_line_height
+                bottom = bottom = int(min(line_ys[i+1][0], line_ys[i+1][1]) - padding)
             else:
                 bottom = logo.shape[0]
             
             # Skipping if the line height is too small.
             if (bottom - top) < MIN_LINE_HEIGHT:
                 continue
-                
-            line_boundaries.append([
-                top,           # y1
-                bottom,        # y2
+
+            interest.append([
                 0,             # x1 (start at left edge)
-                logo.shape[1]  # x2 (end at right edge)
-            ])
+                logo.shape[1], # x2 (end at right edge)
+                top,           # y1
+                bottom         # y2
+            ]) 
 
         # Visualization.
         color_logo = cv2.cvtColor(logo, cv2.COLOR_GRAY2BGR)
         
-        # Drawing notebook lines (from the original image with lines).
-        for line_y in line_ys:
-            cv2.line(color_logo, (0, line_y), (color_logo.shape[1], line_y), 
-                    (255, 0, 0), 1)
-        
-        # Drawing text blocks.
-        for i, (y1, y2, x1, x2) in enumerate(line_boundaries):
-            cv2.rectangle(color_logo, (x1, y1), (x2, y2), (0, 255, 0), 1)
+        # Drawing text blocks over areas of interest.
+        for i, (x1, x2, y1, y2) in enumerate(interest): #enumerate line boundaries 
+            cv2.rectangle(color_logo, (x1, y1), (x2, y2), (0, 255, 0), 3)
             cv2.putText(color_logo, f"Block {i+1}", (x1 + 10, y1 + 20), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
@@ -376,32 +383,43 @@ class GreekTextRecognizer:
         plt.show()
         plt.imsave("BLOCKS.png", color_logo)
 
-        return line_boundaries
+        return interest
     
-    def detect_spaces(self, logo, xycoords):
+    def detect_spaces(self, logo, block_coords):
         """
         Uses k-means clustering to detect spaces between 
         words based on vertical whitespace columns.
         """
+        #logo is [height,width]
         spaces = [0]
         SPACE_SENSITIVITY = 0.5       # Lower = more sensitive to small spaces (0.5-1.0).
-        MIN_SPACE_WIDTH = 100         # Absolute minimum pixels to consider as space.
         WORD_SPACE_WIDTH_RATIO = 0.4  # Ratio of line_height for word separation.
         MIN_GAP_RATIO = 0.5           # Minimum ratio of line_height to be considered.
 
-        for y_start, y_end, x_start, x_end in xycoords:
-            segment = self.black_and_white(logo[y_start:y_end, x_start:x_end])
-            _, width = segment.shape
+        for x_start, x_end, y_start, y_end in block_coords:
+                        
+            block = logo[y_start:y_end, x_start:x_end]
+            plt.imshow(block, cmap='gray')
+            plt.savefig("block.png", bbox_inches='tight', pad_inches=0)
+            segment = self.black_and_white("block.png")
+
+            height, width = segment.shape # segment is [height, width]
+            # Absolute minimum pixels to consider as space.
+            MIN_SPACE_WIDTH = int(2*width/height) #expressed as a ratio of the block dimentions
+
             whitespace_lengths = []
             white_count = 0
 
-            for col in range(width):
-                column = segment[:, col]
-                if np.any(column == 0): # Contains text. 
-                    if white_count > MIN_SPACE_WIDTH:
-                        whitespace_lengths.append(white_count)
+            #this checks the entire segment column by column
+            #when there havent been any letters for a set amount of columns
+            #consider it a white space
+            for x in range(width):
+                pixel = segment[:, x] # take the entire column for this x value
+                if np.any(pixel == 0): # If there is text on this column
+                    if white_count > MIN_SPACE_WIDTH: #check if we have had a lot of spaces
+                        whitespace_lengths.append(white_count) # if yes, append it as a full whitespace
                     white_count = 0
-                else: # Whitespace.
+                else: # No text, increment the white count.
                     white_count += 1
 
             if white_count > MIN_SPACE_WIDTH:
@@ -444,6 +462,7 @@ class GreekTextRecognizer:
         MIN_WORD_WIDTH = 5            # Minimum width to consider a word segment.
         WORD_SPACE_WIDTH_RATIO = 0.4  # Ratio of line_height for word separation.
         MIN_GAP_RATIO = 0.5           # Minimum ratio of line_height to be considered.
+
 
         if self.line_height > 0:
             word_separation_threshold = self.line_height * WORD_SPACE_WIDTH_RATIO
