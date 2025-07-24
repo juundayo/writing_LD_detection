@@ -5,7 +5,6 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torchvision import transforms
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix
 from torch.utils.data import DataLoader
 from collections import Counter
@@ -15,19 +14,35 @@ import seaborn as sns
 from tqdm import tqdm
 import time
 import random
+import cv2
+from PIL import Image
 
 import data_loading as dl
 
 # ----------------------------------------------------------------------------#
 
-EPOCHS = 1000
-PATIENCE = 1000
+SAVE_PATH = "/home/ml3/Desktop/Thesis/Models/20250727.pth"
+LOAD_PATH = "/home/ml3/Desktop/Thesis/Models/20250727.pth"
+DATA_DIR = '/home/ml3/Desktop/Thesis/.venv/Data/GreekLetters'
+EPOCHS = 100
+PATIENCE = 50
 BATCH_SIZE = 16
-TRAIN = True
-SAVE_PATH = "/home/ml3/Desktop/Thesis/rs1_tt2_v2.pth"
-LOAD_PATH = "/home/ml3/Desktop/Thesis/rs1000_tt2_v1.pth"
 IMG_HEIGHT = 512
 IMG_WIDTH = 78
+TRAIN = True
+
+SIMILAR_PAIRS = {
+    'Ε': 'ε', 'ε': 'Ε',
+    'Θ': 'θ', 'θ': 'Θ',
+    'Ι': 'ι', 'ι': 'Ι',
+    'Κ': 'κ', 'κ': 'Κ',
+    'Ο': 'ο', 'ο': 'Ο',
+    'Π': 'π', 'π': 'Π',
+    'Ρ': 'ρ', 'ρ': 'Ρ',
+    'Τ': 'τ', 'τ': 'Τ',
+    'Χ': 'χ', 'χ': 'Χ',
+    'Ψ': 'ψ', 'ψ': 'Ψ'
+}
 
 # ----------------------------------------------------------------------------#
 
@@ -178,25 +193,136 @@ with a 50% probability. Specifically, we use:
     → Gaussian blur.
     → Color jitter.
 '''
+def replicate_pad(img_tensor, pad=20):
+    """
+    Converts tensor to OpenCV image, adds a 
+    pad with replicate and returns a tensor.
+    """
+    device = img_tensor.device
+    img_tensor_cpu = img_tensor.cpu()
+    img = transforms.ToPILImage()(img_tensor_cpu)
+    img_np = np.array(img)
+
+    padded = cv2.copyMakeBorder(img_np, pad, pad, pad, pad, 
+                                cv2.BORDER_REPLICATE)
+    padded_img = Image.fromarray(padded)
+
+    return transforms.ToTensor()(padded_img).to(device)
+
 class DynamicAugmentations:
-    def __init__(self):
+    def __init__(self, device='cuda'):
+        self.device = device
         self.augmentations = [
-            transforms.RandomAffine(degrees=7, translate=(0.05, 0.05), 
-                                    scale=(0.95, 1.05,), shear=5),
-            transforms.RandomPerspective(0.3, p=0.4),
-            transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.0)),
-            transforms.RandomApply([
-                transforms.ColorJitter(contrast=(0.8,1.2)),
-                transforms.Lambda(lambda x: x + torch.randn_like(x)*0.03)
-            ], p=0.3)
+            ("RandomAffine", transforms.RandomAffine(
+                degrees=7, translate=(0.05, 0.08), scale=(0.95, 1.05), shear=6,
+                interpolation=transforms.InterpolationMode.BILINEAR
+            )),
+            ("RandomPerspective", transforms.RandomPerspective(
+                distortion_scale=0.3, p=0.4,
+                interpolation=transforms.InterpolationMode.BILINEAR
+            )),
+            ("GaussianBlur", transforms.GaussianBlur(kernel_size=3, 
+                                                     sigma=(0.1, 1.0))),
+            ("ColorJitter+Noise", transforms.Compose([
+                transforms.ColorJitter(contrast=(0.5, 1.9)),
+                transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.03)
+            ]))
         ]
 
-    def __call__(self, img):
+    def __call__(self, img_tensor):
         # 50% chance per augmentation.
-        for aug in self.augmentations:
-            if random.random() < 0.5:  
-                img = aug(img)
-        return img
+        for name, aug in self.augmentations:
+            if random.random() < 0.5:
+                if name in ["RandomAffine", "RandomPerspective"]:
+                    padded = replicate_pad(img_tensor, pad=20)
+                    augmented = aug(padded)
+                    # Cropping back to the original size.
+                    _, h, w = img_tensor.shape
+                    _, H, W = augmented.shape
+                    top = (H - h) // 2
+                    left = (W - w) // 2
+                    augmented = augmented[:, top:top+h, left:left+w]
+                    img_tensor = augmented
+                else:
+                    img_tensor = aug(img_tensor).to(self.device)
+
+        return img_tensor
+
+# ----------------------------------------------------------------------------#
+
+'''
+Using a custom loss function that combines the base cross-entropy loss
+with a similarity penalty for characters that are visually similar.
+This loss function will help the model to not only classify characters
+correctly but also to recognize similar characters as correct predictions.
+'''
+class SimilarCharacterLoss(nn.Module):
+    def __init__(self, num_classes, class_to_idx, weight=None, label_smoothing=0.1):
+        super().__init__()
+        self.num_classes = num_classes
+        self.class_to_idx = class_to_idx
+        self.base_loss = nn.CrossEntropyLoss(weight=weight, 
+                                             label_smoothing=label_smoothing)
+        
+        # Creating the similarity matrix (0.5 penalty for similar characters).
+        self.similarity_matrix = torch.eye(num_classes)
+        
+        # Fill in the similarity matrix
+        for char1, char2 in SIMILAR_PAIRS.items():
+            if char1 in class_to_idx and char2 in class_to_idx:
+                idx1 = class_to_idx[char1]
+                idx2 = class_to_idx[char2]
+                self.similarity_matrix[idx1, idx2] = 0.5
+                self.similarity_matrix[idx2, idx1] = 0.5
+
+    def forward(self, inputs, targets):
+        # Calculating base cross-entropy loss.
+        base_loss = self.base_loss(inputs, targets)
+        
+        # Calculating similarity-adjusted loss.
+        probs = F.softmax(inputs, dim=1)
+        batch_size = targets.size(0)
+        
+        # Converting targets to one-hot labels.
+        targets_onehot = F.one_hot(targets, num_classes=self.num_classes).float()
+        
+        # Applying the similarity matrix to targets.
+        adjusted_targets = torch.matmul(targets_onehot, 
+                                        self.similarity_matrix.to(inputs.device))
+        
+        # Calculating KL divergence between predictions and adjusted targets.
+        similarity_loss = F.kl_div(probs.log(), adjusted_targets, 
+                                   reduction='batchmean')
+        
+        # Combining losses.
+        total_loss = base_loss + 0.3 * similarity_loss
+        
+        return total_loss
+        
+# ----------------------------------------------------------------------------#
+
+def similar_character_accuracy(outputs, labels, classes):
+    """
+    Calculating both strict and lenient accuracy.
+    """
+    _, predicted = torch.max(outputs.data, 1)
+    correct = (predicted == labels).sum().item()
+    
+    # Checking for similar character matches.
+    similar_correct = 0
+    for i in range(len(predicted)):
+        pred_idx = predicted[i].item()
+        true_idx = labels[i].item()
+        pred_char = classes[pred_idx]
+        true_char = classes[true_idx]
+        if pred_char != true_char and pred_char in SIMILAR_PAIRS and SIMILAR_PAIRS[pred_char] == true_char:
+            similar_correct += 1
+    
+    total = labels.size(0)
+    strict_acc = 100 * correct / total
+    lenient_acc = 100 * (correct + 0.5 * similar_correct) / total
+    
+    return strict_acc, lenient_acc
 
 # ----------------------------------------------------------------------------#
 
@@ -222,82 +348,150 @@ def train_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = OCR(num_classes=len(full_dataset.classes)).to(device)
 
+    # Class weights for imbalanced data.
     labels = [label for _, label in train_dataset]
     class_counts = Counter(labels)
     weights = 1. / torch.tensor([class_counts[i] for i in range(len(full_dataset.classes))], 
                                 dtype=torch.float)
 
-    # Loss function with label smoothing.
-    criterion = nn.CrossEntropyLoss(weight=weights.to(device), 
-                                    label_smoothing=0.1)
+    # Custom loss function with similar character handling.
+    criterion = SimilarCharacterLoss(
+        num_classes=len(full_dataset.classes),
+        class_to_idx=full_dataset.class_to_idx,
+        weight=weights.to(device),
+        label_smoothing=0.1
+    )
     
-    # Optimizer with weight decay.
+    # Optimizer and scheduler.
     optimizer = optim.AdamW(model.parameters(), lr=0.0001, weight_decay=1e-4)
-
-    # Learning rate scheduler.
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', 
-                                                     patience=3, 
-                                                     min_lr=1e-4,
-                                                     factor=0.2)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 'max', patience=3, min_lr=1e-4, factor=0.2
+    )
     
-    # Early stopping!
+    # Early stopping and tracking.
     best_acc = 0.0
     patience = PATIENCE
     patience_counter = 0
-        
-    pbar = tqdm(range(EPOCHS), desc="Training Progress", unit="epoch", 
-                position=0, leave=True)
     
-    # Training!
+    # Metric tracking for plotting.
+    train_loss_history = []
+    train_strict_acc_history = []
+    train_lenient_acc_history = []
+    test_strict_acc_history = []
+    test_lenient_acc_history = []
+        
+    pbar = tqdm(range(EPOCHS), desc="Training Progress", unit="epoch", position=0, leave=True)
+    
+    # トレーニング！
     for epoch in pbar:
         model.train()
-        running_loss = 0.0
-        correct = 0
-        total = 0
+        epoch_loss = 0.0
+        epoch_correct = 0
+        epoch_similar = 0
+        epoch_total = 0
         start_time = time.time()
         
         for images, labels in train_loader:
+            # Moving data to device.
             images, labels = images.to(device), labels.to(device)
             
-            # Adding dynamic augmentations to images (0.5 chance).
-            aug = DynamicAugmentations()
-            images = torch.stack([aug(img) for img in images])
+            # Applying augmentations.
+            if TRAIN:  
+                aug = DynamicAugmentations(device=device)
+                images = torch.stack([aug(img) for img in images])
 
+            # Forward pass!
             optimizer.zero_grad()
             outputs = model(images)
             loss = criterion(outputs, labels)
+            
+            # Backward pass!
             loss.backward()
-            
-            # Gradient clipping.
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            
             optimizer.step()
             
-            running_loss += loss.item()
-            _, predicted = torch.max(outputs.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
+            # Calculating batch metrics.
+            batch_size = labels.size(0)
+            epoch_total += batch_size
+            epoch_loss += loss.item() * batch_size  # Weighted by batch size
             
-        train_acc = 100 * correct / total
-        test_acc = evaluate_model(model, test_loader, device)
-        epoch_time = time.time() - start_time
+            # Getting predictions.
+            _, predicted = torch.max(outputs.data, 1)
+            batch_correct = (predicted == labels).sum().item()
+            epoch_correct += batch_correct
+            
+            # Tracking similar characters (only for incorrect predictions).
+            incorrect_mask = (predicted != labels)
+            incorrect_preds = predicted[incorrect_mask]
+            incorrect_labels = labels[incorrect_mask]
+            
+            for pred, true in zip(incorrect_preds, incorrect_labels):
+                pred_char = full_dataset.classes[pred.item()]
+                true_char = full_dataset.classes[true.item()]
+                if pred_char in SIMILAR_PAIRS and SIMILAR_PAIRS[pred_char] == true_char:
+                    epoch_similar += 1
         
-        # Progress bar update.
+        # Calculating epoch metrics.
+        train_loss = epoch_loss / epoch_total
+        train_strict_acc = 100 * epoch_correct / epoch_total
+        train_lenient_acc = 100 * (epoch_correct + 0.5 * epoch_similar) / epoch_total
+        
+        # Test evaluation
+        model.eval()
+        test_correct = 0
+        test_similar = 0
+        test_total = 0
+        
+        with torch.no_grad():
+            for images, labels in test_loader:
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                
+                _, predicted = torch.max(outputs.data, 1)
+                batch_size = labels.size(0)
+                test_total += batch_size
+                test_correct += (predicted == labels).sum().item()
+                
+                # Track similar characters in test set
+                incorrect_mask = (predicted != labels)
+                incorrect_preds = predicted[incorrect_mask]
+                incorrect_labels = labels[incorrect_mask]
+                
+                for pred, true in zip(incorrect_preds, incorrect_labels):
+                    pred_char = full_dataset.classes[pred.item()]
+                    true_char = full_dataset.classes[true.item()]
+                    if pred_char in SIMILAR_PAIRS and SIMILAR_PAIRS[pred_char] == true_char:
+                        test_similar += 1
+        
+        test_strict_acc = 100 * test_correct / test_total
+        test_lenient_acc = 100 * (test_correct + 0.5 * test_similar) / test_total
+        
+        # Store metrics
+        train_loss_history.append(train_loss)
+        train_strict_acc_history.append(train_strict_acc)
+        train_lenient_acc_history.append(train_lenient_acc)
+        test_strict_acc_history.append(test_strict_acc)
+        test_lenient_acc_history.append(test_lenient_acc)
+        
+        # Update progress bar
+        epoch_time = time.time() - start_time
         pbar.set_postfix({
-            'Loss': f"{running_loss/len(train_loader):.4f}",
-            'Train Acc': f"{train_acc:.2f}%",
-            'Test Acc': f"{test_acc:.2f}%", 
+            'Loss': f"{train_loss:.4f}",
+            'Train Acc (S/L)': f"{train_strict_acc:.2f}%/{train_lenient_acc:.2f}%",
+            'Test Acc (S/L)': f"{test_strict_acc:.2f}%/{test_lenient_acc:.2f}%", 
             'Time': f"{epoch_time:.2f}s",
             'Best': f"{best_acc:.2f}%"
         })
         
-        # Scheduler update.
-        scheduler.step(test_acc)
+        # Learning rate scheduling
+        scheduler.step(test_strict_acc)
         
-        # Early stopping check.
-        if test_acc > best_acc:
-            best_acc = test_acc
+        # Early stopping
+        if test_strict_acc > best_acc:
+            best_acc = test_strict_acc
             patience_counter = 0
+            # Save best model
+            torch.save(model.state_dict(), SAVE_PATH)
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -305,7 +499,32 @@ def train_model():
                 print(f"\nEarly stopping at epoch {epoch+1}")
                 break
     
+    # Final cleanup
     pbar.close()
+    
+    # Plot training curves
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot(train_loss_history, label='Training Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Training Loss')
+    plt.legend()
+    
+    plt.subplot(1, 2, 2)
+    plt.plot(train_strict_acc_history, label='Train Strict Acc')
+    plt.plot(train_lenient_acc_history, label='Train Lenient Acc')
+    plt.plot(test_strict_acc_history, label='Test Strict Acc')
+    plt.plot(test_lenient_acc_history, label='Test Lenient Acc')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy (%)')
+    plt.title('Training and Test Accuracy')
+    plt.legend()
+    
+    plt.tight_layout()
+    plt.savefig('training_curves.png')
+    plt.show()
+    
     return model
 
 # ----------------------------------------------------------------------------#
@@ -340,8 +559,7 @@ def imshow(img_tensor):
     img = img * 0.5 + 0.5
     return img
 
-def plot_predictions(model, test_loader, class_names, device, num_figures=10, 
-                     img_per_fig=20):
+def plot_predictions(model, test_loader, class_names, device, num_figures=10, img_per_fig=20):
     model.eval()
     total_images = num_figures * img_per_fig
     shown = 0
@@ -349,6 +567,7 @@ def plot_predictions(model, test_loader, class_names, device, num_figures=10,
     with torch.no_grad():
         for images, labels in test_loader:
             images, labels = images.to(device), labels.to(device)
+
             outputs = model(images)
             _, preds = torch.max(outputs, 1)
 
@@ -375,7 +594,7 @@ def plot_predictions(model, test_loader, class_names, device, num_figures=10,
                 if shown % img_per_fig == 0:
                     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
                     plt.show()
-                    
+
 # ----------------------------------------------------------------------------#
 
 if __name__ == "__main__":
@@ -389,7 +608,7 @@ if __name__ == "__main__":
     ])
         
     # Loading the dataset and using an 80% train - 20% test split.
-    full_dataset = dl.GreekLetterDataset(root_dir='/home/ml3/Desktop/Thesis/.venv/Data/GreekLetters', 
+    full_dataset = dl.GreekLetterDataset(root_dir=DATA_DIR, 
                                     transform=data_transforms)
 
     train_dataset, test_dataset = full_dataset.get_datasets()
@@ -411,9 +630,8 @@ if __name__ == "__main__":
         model.eval()
         print("Loaded the model successfully.")
 
-    # Displaying a confusion matrix.
+    # Displaying a confusion matrix and image predictions.
     plot_confusion_matrix(model, test_loader, device, full_dataset.classes)
     plot_predictions(model, test_loader, full_dataset.classes, device)
 
 # ----------------------------------------------------------------------------#
-
