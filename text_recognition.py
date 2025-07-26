@@ -58,7 +58,6 @@ class GreekTextRecognizer:
             'letters': {}
         }
 
-        ''' TODO: UNCOMMENT LATER
         # Loading the OCR model.
         self.device = device
         self.model = self.load_model(len(class_mapping))
@@ -67,7 +66,6 @@ class GreekTextRecognizer:
         self.greek_dictionary = self.load_greek_dictionary(
             '/home/ml3/Desktop/Thesis/.venv/Data/filtered_dictionary.dic'
         ) 
-        '''
 
         if SEARCH_TEST:
             start = time.time()
@@ -89,7 +87,6 @@ class GreekTextRecognizer:
         self.line_height, self.line_coords = self.line_distance(self.img_lines)
 
         # Calculating the coordinates of blocks of text recognized.
-        #self.block_coords = self.find_blocks(self.img_no_lines)
         self.block_coords = self.find_blocks(self.img_lines)
 
         # Detecting space boxes for characters.
@@ -101,6 +98,14 @@ class GreekTextRecognizer:
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5])
         ])
+
+        self.dysgraphia_features = {
+            'baseline_deviation': [],
+            'word_size_variation': [],
+            'intra_word_spacing': [],
+            'slant_consistency': [],
+            'random_capitals': []  # Placeholder.
+        }
 
     def load_model(self, num_classes):
         model = OCR(num_classes=num_classes).to(self.device)
@@ -213,12 +218,12 @@ class GreekTextRecognizer:
 
 # ----------------------------------------------------------------------------#
 
-    def black_and_white(self, image):
+    def black_and_white(self, image_path):
         """
         Converts grayscale image to strict black 
         and white using a threshold of 50.
         """
-        image = Image.open(image)
+        image = Image.open(image_path)
         image_gray = ImageOps.grayscale(image)
         image_array = np.array(image_gray)
         threshold = 50
@@ -405,7 +410,7 @@ class GreekTextRecognizer:
 
             height, width = segment.shape # segment is [height, width]
             # Absolute minimum pixels to consider as space.
-            MIN_SPACE_WIDTH = int(2*width/height) #expressed as a ratio of the block dimentions
+            MIN_SPACE_WIDTH = int(np.ceil(2*width/height)) #expressed as a ratio of the block dimentions
 
             whitespace_lengths = []
             white_count = 0
@@ -422,11 +427,8 @@ class GreekTextRecognizer:
                 else: # No text, increment the white count.
                     white_count += 1
 
-            if white_count > MIN_SPACE_WIDTH:
-                whitespace_lengths.append(white_count)
-
             # Classifying spaces using clustering.
-            non_zero_spaces = np.array([w for w in whitespace_lengths if w > MIN_SPACE_WIDTH])
+            non_zero_spaces = np.array(whitespace_lengths)
 
             if non_zero_spaces.size == 0:
                 spaces.append(2) # Newline.
@@ -458,11 +460,15 @@ class GreekTextRecognizer:
         classification (1=intra-word, 2=inter-word) and 
         saves each word as a separate PNG file.
         """
+        
+        image = self.black_and_white(IMG_PATH)
         self.char_positions = []
         MIN_WORD_WIDTH = 5            # Minimum width to consider a word segment.
         WORD_SPACE_WIDTH_RATIO = 0.4  # Ratio of line_height for word separation.
         MIN_GAP_RATIO = 0.5           # Minimum ratio of line_height to be considered.
 
+        # Initializing dysgraphia metrics.
+        self.dysgraphia_features = {k: [] for k in self.dysgraphia_features}
 
         if self.line_height > 0:
             word_separation_threshold = self.line_height * WORD_SPACE_WIDTH_RATIO
@@ -473,21 +479,17 @@ class GreekTextRecognizer:
 
         # Ensuring min_whitespace_pixels is reasonably 
         # smaller than word_separation_threshold.
-        if (min_whitespace_pixels >= word_separation_threshold) and \
-           (self.line_height <= 0):
+        if (min_whitespace_pixels >= word_separation_threshold) and (self.line_height <= 0):
             min_whitespace_pixels = max(1, word_separation_threshold - 1)
-        elif (min_whitespace_pixels >= word_separation_threshold) and \
-             (self.line_height > 0):
+        elif (min_whitespace_pixels >= word_separation_threshold) and (self.line_height > 0):
             min_whitespace_pixels = max(1, self.line_height * (WORD_SPACE_WIDTH_RATIO / 2) )
 
         for line_idx, (top, bottom, left, right) in enumerate(finalXY):
-            line_region = image[top:bottom, left:right]
-            
+                       
             column_pos = 0
-
             # Scanning to find all space segments and their types.
-            segment = self.black_and_white(line_region)
-            _, width = segment.shape
+            segment = image[top:bottom, left:right]
+            _ , width = segment.shape
             whitespace_lengths = []
             white_count = 0
 
@@ -523,7 +525,7 @@ class GreekTextRecognizer:
                     word_end = space_start
                     if word_end - word_start >= MIN_WORD_WIDTH:
                         # Extracting and saving the word.
-                        word_region = line_region[:, word_start:word_end]
+                        word_region = segment[:, word_start:word_end]
                         
                         # Finding vertical bounds.
                         rows_with_ink = np.any(word_region < 200, axis=1)
@@ -540,15 +542,15 @@ class GreekTextRecognizer:
                             [int(abs_y1), int(abs_y2)]
                         ]
                         
-                        bw_word = self.black_and_white(word_region).astype(np.uint8)
+                        bw_word = image[abs_y1:abs_y2,abs_x1:abs_x2]
                         Image.fromarray(bw_word).save(f"{DUMP}/{filename}")
                         word_count += 1
                     
                     word_start = space_end  # Starting the next word after this space.
             
-            # Save the last word in the line
+            # Saving the last word in the line.
             if width - word_start >= MIN_WORD_WIDTH:
-                word_region = line_region[:, word_start:width]
+                word_region = segment[:, word_start:width]
                 
                 rows_with_ink = np.any(word_region < 200, axis=1)
                 y_positions = np.where(rows_with_ink)[0]
@@ -564,10 +566,66 @@ class GreekTextRecognizer:
                     [int(abs_y1), int(abs_y2)]
                 ]
                 
-                bw_word = self.black_and_white(word_region).astype(np.uint8)
+                bw_word = image[abs_y1:abs_y2,abs_x1:abs_x2]
                 Image.fromarray(bw_word).save(f"{DUMP}/{filename}")
 
+        for filename, coords in self.letter_coord['letters'].items():
+            # 1. Baseline Deviation.
+            word_center_y = (coords[1][0] + coords[1][1]) / 2
+            expected_baseline = self._get_expected_baseline(word_center_y)
+
+            if expected_baseline is not None:
+                deviation = abs(word_center_y - expected_baseline)
+                self.dysgraphia_features['baseline_deviation'].append(deviation)
+            
+            # 2. Word Size Variation.
+            word_height = coords[1][1] - coords[1][0]
+            self.dysgraphia_features['word_size_variation'].append(word_height)
+
         return
+    
+    def _get_expected_baseline(self, y_position):
+        """
+        Finds the closest baseline for a given y-coordinate.
+        """
+        if not hasattr(self, 'detected_lines') or not self.detected_lines:
+            return None
+            
+        # Finds the nearest baseline.
+        closest_line = min(self.detected_lines, key=lambda line: abs(line - y_position))
+        return closest_line
+    
+    def analyze_handwriting_consistency(self):
+        """
+        Calculate consistency metrics for dysgraphia detection
+        """
+        metrics = {}
+        
+        # 1. Baseline Stability Analysis.
+        if self.dysgraphia_features['baseline_deviation']:
+            avg_deviation = np.mean(self.dysgraphia_features['baseline_deviation'])
+            dev_std = np.std(self.dysgraphia_features['baseline_deviation'])
+            metrics['baseline_stability'] = {
+                'mean_deviation': avg_deviation,
+                'deviation_std': dev_std,
+                'consistency_score': max(0, 1 - (avg_deviation / (self.line_height or 1)))
+            }
+        
+        # 2. Word Size Consistency.
+        if self.dysgraphia_features['word_size_variation']:
+            size_std = np.std(self.dysgraphia_features['word_size_variation'])
+            metrics['size_consistency'] = {
+                'size_std': size_std,
+                'consistency_score': max(0, 1 - (size_std / (self.line_height or 1)))
+            }
+        
+        # 3. Intra-word Spacing Analysis (Requires character segmentation)
+        # [To be implemented in character segmentation phase]
+        
+        # 4. Slant Analysis (Requires character-level segmentation)
+        # [To be implemented later]
+        
+        return metrics
     
     def clean_and_resize(self, path):
         """
@@ -575,7 +633,7 @@ class GreekTextRecognizer:
         standardizing size for OCR. The x border is as tight
         as possible and the y border extends upwards until
         a few pixels above the line above the letter to cover
-        tonos cases and to match the data the model was trained on.
+        intonation and to match the data the model was trained on.
         """
         def has_black_pixels(column_or_row):
             """Check if the column/row contains any black pixels (0)."""
@@ -773,12 +831,6 @@ class GreekTextRecognizer:
         # Printing the coordinates of each word found.
         for filename, coords in recognizer.letter_coord['letters'].items():
             print(f"{filename}: x={coords[0]}, y={coords[1]}")
-
-        # Using the coordinates of each letter to crop the original image
-        # without cv2 transforms. WIP, might not be needed. 
-        # TODO: when making the boxes in segment_words, crop the original
-        # image as well with the coords obtained.
-        #self.crop_original_img()
         
         # Recognizing each character added to the image folder.
         charPred = []
@@ -790,6 +842,11 @@ class GreekTextRecognizer:
                 char_data.append((char, conf))
             #os.remove(img_path)
         
+        # Dysgraphia analysis.
+        dysgraphia_metrics = self.analyze_handwriting_consistency()
+        result = self.reconstruct_text(charPred, self.spaces)
+        result['dysgraphia_metrics'] = dysgraphia_metrics
+    
         # Reconstructing the text with dictionary checking.
         return self.reconstruct_text(charPred, self.spaces)
 
@@ -806,5 +863,11 @@ if __name__ == '__main__':
     print(f"Character Count: {result['char_count']}")
     print(f"Word Count: {result['word_count']}")
     print(f"Unknown Words: {result['unknown_words']}")
+
+    print("\nDysgraphia Analysis:")
+    for metric, values in result['dysgraphia_metrics'].items():
+        print(f"{metric.upper()}:")
+        for k, v in values.items():
+            print(f"  {k}: {v:.4f}")
 
 # ----------------------------------------------------------------------------#
