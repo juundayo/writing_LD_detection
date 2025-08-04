@@ -37,14 +37,7 @@ SEARCH_TEST = False
 # ----------------------------------------------------------------------------#
 
 class GreekTextRecognizer:
-    def __init__(self, device):
-        os.makedirs(BLOCKS_FOLDER, exist_ok=True)
-        for filename in os.listdir(BLOCKS_FOLDER):
-            file_path = os.path.join(BLOCKS_FOLDER, filename)
-            if os.path.isfile(file_path) or os.path.islink(file_path):
-                os.remove(file_path)
-        
-        
+    def __init__(self, device):        
         # Dictionary that stores the coordinates of each letter found.
         self.letter_coord = {
             'image_dimensions': None,
@@ -82,8 +75,6 @@ class GreekTextRecognizer:
         # notebook lines through a Hough transform.
         self.line_height, self.line_coords = self.hough_distance(self.img_lines)
 
-        # Calculating the coordinates of blocks of text recognized.
-        self.block_coords = self.find_blocks(self.original_img)
         
         # Transform applied to each generated cropped image.
         self.transform = transforms.Compose([
@@ -206,22 +197,6 @@ class GreekTextRecognizer:
         return binary
 
 # ----------------------------------------------------------------------------#
-
-    def black_and_white(self, image_path):
-        """
-        Converts grayscale image to strict black 
-        and white using a threshold of 50.
-        """
-        image = Image.open(image_path)
-        image_gray = ImageOps.grayscale(image)
-        image_array = np.array(image_gray)
-        threshold = 50
-        binary = np.where(image_array <= threshold, 0, 255).astype(np.uint8)
-        plt.title("")
-        plt.axis('off')
-        plt.imshow(binary, cmap='gray')
-        plt.savefig("blacknwhite.png", bbox_inches='tight', pad_inches=0)
-        return binary
     
     def hough_distance(self, image):
         '''
@@ -338,23 +313,22 @@ class GreekTextRecognizer:
             return [[0, logo.shape[0], 0, logo.shape[1]]]
         
         interest = []
-        padding = int(self.line_height * VERTICAL_PADDING_RATIO)
-        extension = int(self.line_height * LINE_EXTENSION_RATIO)
-
+        padding_above = int(self.line_height * VERTICAL_PADDING_RATIO)
+        padding_below = int(self.line_height * LINE_EXTENSION_RATIO)
         # Creating one box per two lines.
         for i in range(0, len(line_ys), 2):
             # Top of area of interest.
-            top = int(max(0, max(line_ys[i][0], line_ys[i][1]) + padding))
+            top = int(max(0, max(line_ys[i][0], line_ys[i][1]) - padding_above))
             
             # Bottom extends to 1.5 lines below.
             if i + 1 < len(line_ys):
                 # If there's a next line, extend to midway between current and next.
                 bottom = int(min(logo.shape[0], 
-                            (max(line_ys[i][0], line_ys[i][1]) + extension)))
+                            (max(line_ys[i][0], line_ys[i][1]) + padding_below)))
             else:
                 # For last line, just extend by standard amount
                 bottom = int(min(logo.shape[0], 
-                            max(line_ys[i][0], line_ys[i][1]) + extension))
+                            max(line_ys[i][0], line_ys[i][1]) + padding_below))
             
             # Skipping if the line height is too small.
             if (bottom - top) < MIN_LINE_HEIGHT:
@@ -386,11 +360,7 @@ class GreekTextRecognizer:
         plt.axis('off')
         plt.show()
         plt.imsave("BLOCKS.png", color_logo)
-
-        return interest
     
-# ----------------------------------------------------------------------------#
-
     def _get_expected_baseline(self, y_position):
         """
         Finds the closest baseline for a given y-coordinate.
@@ -434,8 +404,6 @@ class GreekTextRecognizer:
         
         return metrics
     
-# ----------------------------------------------------------------------------#
-
     def recognize_character(self, char_image):
         """
         Recognizing a single character.
@@ -543,19 +511,19 @@ class GreekTextRecognizer:
     
     def recognize_text(self):
         """
-        Main OCR pipeline that processes an image file and
-        returns the recognized text with statistics. 
+        Main OCR pipeline that processes an image file 
+        and returns the recognized text with statistics. 
         """
-        # Segments words and saves them as PNGs in LetterDump.
-        # TODO: pipeline with segment.py
-        print("Character segmentation completed.")
+        os.makedirs(BLOCKS_FOLDER, exist_ok=True)
+        for filename in os.listdir(BLOCKS_FOLDER):
+            file_path = os.path.join(BLOCKS_FOLDER, filename)
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.remove(file_path)
         
-        # ???
+        # Extracting blocks of text from the image.
+        self.find_blocks(self.original_img)
+        exit(0)  # For testing purposes.
 
-        # Printing the coordinates of each word found.
-        for filename, coords in recognizer.letter_coord['letters'].items():
-            print(f"{filename}: x={coords[0]}, y={coords[1]}")
-        
         # Recognizing each character added to the image folder.
         charPred = []
         char_data = []
