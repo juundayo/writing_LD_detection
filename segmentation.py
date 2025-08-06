@@ -7,6 +7,12 @@ from collections import defaultdict
 
 # ----------------------------------------------------------------------------#
 
+INPUT_FOLDER = "/home/ml3/Desktop/Thesis/TextBlocks"
+OUTPUT_FOLDER = "/home/ml3/Desktop/Thesis/LetterCrops"
+LINE_DATA_FILE = "/home/ml3/Desktop/Thesis/line_data.json"
+
+# ----------------------------------------------------------------------------#
+
 class Rectangle:
     def __init__(self, x, y, x2, y2, area):
         self.x = x
@@ -37,10 +43,9 @@ class Word:
     def get_bbox(self):
         return (self.x_min, self.y_min, self.x_max, self.y_max)
 
-def rectangle_cleaning(rectlist, recaverage):
-    return [rect for rect in rectlist if rect.area >= recaverage * 0.2]
+# ----------------------------------------------------------------------------#
 
-def pre_processing(myImage):
+def pre_processing(myImage, im_average=None):
     grayImg = cv2.cvtColor(myImage, cv2.COLOR_BGR2GRAY)
     ret, thresh1 = cv2.threshold(grayImg, 0, 255, 
                                 cv2.THRESH_OTSU | cv2.THRESH_BINARY_INV)
@@ -54,32 +59,38 @@ def pre_processing(myImage):
                                               cv2.CHAIN_APPROX_NONE)
     im2 = myImage.copy()
     
-    return character_segmentation(im2)
+    return character_segmentation(im2, im_average)
 
-def cluster_characters_to_words(rectangles, max_gap=30):
+# ----------------------------------------------------------------------------#
+
+def cluster_characters_to_words(rectangles):
     """
-    Clusters individual characters
-    into words based on proximity.
+    Clusters individual characters into words based on dynamic proximity threshold.
     """
     if not rectangles:
         return []
     
-    # Sorting rectangles left to right.
+    # Sort rectangles left to right
     sorted_rects = sorted(rectangles, key=lambda r: r.x)
+    
+    # Calculate average character width
+    avg_width = np.mean([r.x2 - r.x for r in sorted_rects])
+    
+    # Dynamic gap threshold (e.g., 0.5 * average width)
+    dynamic_gap_threshold = avg_width * 0.5
     
     words = []
     current_word = Word()
     
-    for i, rect in enumerate(sorted_rects):
+    for rect in sorted_rects:
         if not current_word.characters:
             current_word.add_character(rect)
         else:
-            # Calculating the gap between current 
-            # character and previous character.
             last_char = current_word.characters[-1]
             gap = rect.x - last_char.x2
             
-            if gap < max_gap:
+            # Use dynamic threshold with minimum fallback
+            if gap < max(dynamic_gap_threshold, 10):  # Never less than 10px
                 current_word.add_character(rect)
             else:
                 words.append(current_word)
@@ -93,74 +104,105 @@ def cluster_characters_to_words(rectangles, max_gap=30):
 
 # ----------------------------------------------------------------------------#
 
-def character_segmentation(img):
+def character_segmentation(img, im_average=None):
+    # Grayscale conversion and thresholding
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
-    
+
+    # Morphological operations
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1,5))
-
-    # Removing noise.
     eroded = cv2.erode(thresh, kernel, iterations=1)
-
-    # Expanding characters.
     dilated = cv2.dilate(eroded, kernel, iterations=3)
     
-    contours, _ = cv2.findContours(dilated, 
-                                   cv2.RETR_EXTERNAL, 
-                                   cv2.CHAIN_APPROX_SIMPLE)
+    # Find contours
+    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    rectangles = []    
+    running_average = 0
     
-    iteration = 0
-    runningAverage = 0
-    rectangles = []
-    
-    for contour in contours:
+    for i, contour in enumerate(contours):
         x, y, w, h = cv2.boundingRect(contour)
         area = w * h
-        
         rect = Rectangle(x, y, x + w, y + h, area)
         rectangles.append(rect)
+        running_average = running_average + (area - running_average) / (i + 1)
+
+    # Initial area-based filtering
+    filter_threshold = im_average * 0.33 if im_average is not None else running_average * 0.33
+    filtered_rectangles = [rect for rect in rectangles if rect.area >= filter_threshold]
+
+    # Baseline-based tonos removal.
+    if im_average is not None:
+        # Calculating the average baseline (bottom y-coordinate) of characters.
+        avg_baseline = np.mean([rect.y2 for rect in filtered_rectangles])
         
-        runningAverage = runningAverage + (area - runningAverage) / (iteration + 1)
-        iteration += 1
+        # Calculating the average character height.
+        avg_height = np.mean([rect.y2 - rect.y for rect in filtered_rectangles])
+        
+        # Defining threshold for "too high".
+        height_threshold = avg_baseline - (0.5 * avg_height)
+        
+        # Filtering out characters significantly above the baseline.
+        filtered_rectangles = [
+            rect for rect in filtered_rectangles
+            if rect.y2 > height_threshold  
+        ]
+
+    # Clustering characters into words
+    words = cluster_characters_to_words(filtered_rectangles)
     
-    # Filtering small rectangles (noise, tonos and dialytics).
-    rectangles = rectangle_cleaning(rectangles, runningAverage)
-    
-    # Clustering characters into words.
-    words = cluster_characters_to_words(rectangles)
-    
+    # Visualization
     vis_img = img.copy()
-    
-    # Drawing character boxes (green).
-    for rect in rectangles:
+    for rect in filtered_rectangles:
         cv2.rectangle(vis_img, (rect.x, rect.y), (rect.x2, rect.y2), (0, 255, 0), 2)
     
-    # Drawing word boxes (blue).
+    # Prepare word data
     word_data = []
     for i, word in enumerate(words):
         x1, y1, x2, y2 = word.get_bbox()
         cv2.rectangle(vis_img, (x1, y1), (x2, y2), (255, 0, 0), 2)
-        
-        # Storing word data with character coordinates.
         word_data.append({
             'word_id': i,
             'bbox': (x1, y1, x2, y2),
             'characters': [(c.x, c.y, c.x2, c.y2) for c in word.characters]
         })
     
-    return vis_img, word_data
+    return vis_img, word_data, running_average
 
 # ----------------------------------------------------------------------------#
 
-if __name__ == "__main__":
-    png = "/home/ml3/Desktop/Thesis/Screenshot_7.png"
+def process_image_block(image_block, im_average):
+    """Main processing function to be called externally."""
+    segmented_img, word_data, _ = pre_processing(image_block, im_average)
+
+    return segmented_img, word_data
+
+# ----------------------------------------------------------------------------#
+
+def get_image_average(full_image):
+    _, _, running_average = pre_processing(full_image)
+
+    return running_average
+
+# ----------------------------------------------------------------------------#
+
+def testing():
+    png = "/home/ml3/Desktop/Thesis/BlockImages/block_1.png"
+    png2 = "/home/ml3/Desktop/Thesis/two_mimir.jpg"
+
     image = cv2.imread(png)
-    
-    segmented_img, word_data = pre_processing(image)
+    image2 = cv2.imread(png2)
+
+    average = get_image_average(image2)
+    segmented_img, word_data = process_image_block(image_block=image, im_average=average)
     segmented_img_rgb = cv2.cvtColor(segmented_img, cv2.COLOR_BGR2RGB)
     
     # Saving and showing results.
     plt.imshow(segmented_img_rgb)
     plt.axis("off")
-    plt.savefig("thesis_crop_test.png", bbox_inches='tight', pad_inches=0)
+    plt.savefig("0_segmented.png", bbox_inches='tight', pad_inches=0)
     plt.show()
+
+# ----------------------------------------------------------------------------#
+
+if __name__ == "__main__":
+    testing()
