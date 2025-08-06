@@ -16,19 +16,16 @@ from collections import defaultdict
 
 from vt_model import OCR
 from data_loading import class_mapping
+from segmentation import process_image_block, get_image_average, Rectangle, Word
 
 # ----------------------------------------------------------------------------#
 
 MODEL_PATH = "/home/ml3/Desktop/Thesis/Models/rs1_tt2_v2.pth"
 
-IMG_PATH = "/home/ml3/Desktop/Thesis/two_mimir.jpg"
-#IMG_PATH = "/home/ml3/Downloads/input3.jpg"
-
-DUMP = "/home/ml3/Desktop/Thesis/LetterDump"
-
-OUTPUT_FOLDER = "/home/ml3/Desktop/Thesis/LetterCrops"
+LETTER_FOLDER = "/home/ml3/Desktop/Thesis/LetterFolder"
 BLOCKS_FOLDER = "/home/ml3/Desktop/Thesis/BlockImages"
 
+IMG_PATH = "/home/ml3/Desktop/Thesis/two_mimir.jpg"
 IMG_HEIGHT = 512
 IMG_WIDTH = 78
 
@@ -38,15 +35,14 @@ SEARCH_TEST = False
 
 class GreekTextRecognizer:
     def __init__(self, device):        
-        # Dictionary that stores the coordinates of each letter found.
+        # Loading the OCR model.
+        self.device = device
+        #self.model = self.load_model(len(class_mapping))
+
         self.letter_coord = {
             'image_dimensions': None,
             'letters': {}
         }
-
-        # Loading the OCR model.
-        self.device = device
-        self.model = self.load_model(len(class_mapping))
 
         # Loading the dictionary.
         self.greek_dictionary = self.load_greek_dictionary(
@@ -62,10 +58,11 @@ class GreekTextRecognizer:
             exit(0)
 
         # Inverse mapping from index to class name.
-        self.classes = sorted(class_mapping.values())
-        self.idx_to_class = {i: cls for i, cls in enumerate(self.classes)}
+        #self.classes = sorted(class_mapping.values())
+        #self.idx_to_class = {i: cls for i, cls in enumerate(self.classes)}
 
         # Loading the original image.
+        self.coloured_original = cv2.imread(IMG_PATH)
         self.original_img = cv2.imread(IMG_PATH, cv2.IMREAD_GRAYSCALE)
 
         # Loading edited versions of the input image. 
@@ -74,7 +71,6 @@ class GreekTextRecognizer:
         # Calculating the average space between the
         # notebook lines through a Hough transform.
         self.line_height, self.line_coords = self.hough_distance(self.img_lines)
-
         
         # Transform applied to each generated cropped image.
         self.transform = transforms.Compose([
@@ -170,34 +166,6 @@ class GreekTextRecognizer:
 
         return image
 
-# ----------------------------------------------------------------------------#
-
-    '''MIGHT GET REMOVED LATER'''
-    def input_without_lines(self, IMG_PATH):
-        """
-        Processes the input image through grayscale conversion,
-        thresholding, and line/character segmentation.
-        """
-        # Image loading and grayscale conversion.
-        img = Image.open(IMG_PATH)
-        img_gray = ImageOps.grayscale(img)
-        img_array = np.array(img_gray)
-        
-        # Thresholding.
-        threshold = 100
-        binary = np.where(img_array <= threshold, 0, 255).astype(np.uint8)
-
-        # Show the image
-        plt.imshow(binary, cmap='gray')
-        plt.title("Thresholded Binary Image")
-        plt.axis('off')
-        #plt.show()
-        plt.savefig("INPUT_WITHOUT_LINES.png", bbox_inches='tight', pad_inches=0)
-
-        return binary
-
-# ----------------------------------------------------------------------------#
-    
     def hough_distance(self, image):
         '''
         Dynamically detecting the lines of the 
@@ -302,8 +270,8 @@ class GreekTextRecognizer:
         include text), it will create 2 boxes from 0 to 1.5
         and 2 to 3.5.
         """
-        VERTICAL_PADDING_RATIO = 0.07  # 7% of line height as padding.
-        LINE_EXTENSION_RATIO = 1.5     # Extend the block height by 1.5x of line height.
+        VERTICAL_PADDING_RATIO = 0.1  # 7% of line height as padding.
+        LINE_EXTENSION_RATIO = 1.33    # Extend the block height by 1.25x of line height.
         MIN_LINE_HEIGHT = 20           # Minimum height to consider a valid line.
 
         line_ys = sorted([(float(y0),float(y1)) for (y0,y1) in self.line_coords])
@@ -315,6 +283,7 @@ class GreekTextRecognizer:
         interest = []
         padding_above = int(self.line_height * VERTICAL_PADDING_RATIO)
         padding_below = int(self.line_height * LINE_EXTENSION_RATIO)
+
         # Creating one box per two lines.
         for i in range(0, len(line_ys), 2):
             # Top of area of interest.
@@ -360,206 +329,81 @@ class GreekTextRecognizer:
         plt.axis('off')
         plt.show()
         plt.imsave("BLOCKS.png", color_logo)
-    
-    def _get_expected_baseline(self, y_position):
-        """
-        Finds the closest baseline for a given y-coordinate.
-        """
-        if not hasattr(self, 'detected_lines') or not self.detected_lines:
+        
+    def find_nearest_above_line(self, y_position):
+        """Finds the nearest Hough line above the given y-position."""
+        # Converting line_coords to y positions (taking the lower of the two y values).
+        line_ys = []
+        for y0, y1 in self.line_coords:
+            line_ys.append(max(float(y0), float(y1)))
+        
+        # Filtering lines above current position.
+        above_lines = [line for line in line_ys if line < y_position]
+        
+        if not above_lines:
             return None
             
-        # Finds the nearest baseline.
-        closest_line = min(self.detected_lines, key=lambda line: abs(line - y_position))
-        return closest_line
-    
-    def analyze_handwriting_consistency(self):
-        """
-        Calculate consistency metrics for dysgraphia detection
-        """
-        metrics = {}
-        
-        # 1. Baseline Stability Analysis.
-        if self.dysgraphia_features['baseline_deviation']:
-            avg_deviation = np.mean(self.dysgraphia_features['baseline_deviation'])
-            dev_std = np.std(self.dysgraphia_features['baseline_deviation'])
-            metrics['baseline_stability'] = {
-                'mean_deviation': avg_deviation,
-                'deviation_std': dev_std,
-                'consistency_score': max(0, 1 - (avg_deviation / (self.line_height or 1)))
-            }
-        
-        # 2. Word Size Consistency.
-        if self.dysgraphia_features['word_size_variation']:
-            size_std = np.std(self.dysgraphia_features['word_size_variation'])
-            metrics['size_consistency'] = {
-                'size_std': size_std,
-                'consistency_score': max(0, 1 - (size_std / (self.line_height or 1)))
-            }
-        
-        # 3. Intra-word Spacing Analysis (Requires character segmentation)
-        # [To be implemented in character segmentation phase]
-        
-        # 4. Slant Analysis (Requires character-level segmentation)
-        # [To be implemented later]
-        
-        return metrics
-    
-    def recognize_character(self, char_image):
-        """
-        Recognizing a single character.
-        Returns the character itself and the 
-        respective confidence of the prediction.
-        """
-        # Original image.
-        plt.figure(figsize=(10, 4))
-        plt.style.use('dark_background')
-        plt.subplot(1, 2, 1)
-        plt.imshow(char_image, cmap='gray')
-        plt.title("Original Character")
-        plt.axis('off')
+        # Returning the closest line above.
+        return max(above_lines)
 
-        # Transforming and preparing for the model.
-        char_pil = Image.fromarray(char_image).convert('L')
-        transformed_img = self.transform(char_pil)
-        
-        # Preparing transformed image for display.
-        img_to_show = transformed_img.squeeze().cpu().numpy()
-        img_to_show = (img_to_show * 0.5) + 0.5  # Undoing normalization.
-        img_to_show = np.clip(img_to_show, 0, 1)
-        
-        # Transformed image
-        plt.subplot(1, 2, 2)
-        plt.imshow(img_to_show, cmap='gray')
-        plt.title("Transformed (Model Input)")
-        plt.axis('off')
-        plt.style.use('dark_background')
-
-        plt.tight_layout()
-        plt.show()
-        
-        # Continuing with recognition.
-        char_tensor = transformed_img.unsqueeze(0).to(self.device)
-        
-        with torch.no_grad():
-            outputs = self.model(char_tensor)
-            probs = torch.nn.functional.softmax(outputs, dim=1)
-            conf, pred = torch.max(probs, 1)
-
-            char = self.idx_to_class[pred.item()]
-            
-            return char.lower(), conf.item()
-    
-    def reconstruct_text(self, charPred, spaces):
-        """
-        Reconstructs the recognized characters into words and 
-        lines, using the space information and dictionary lookup.
-        """
-        full_text = []
-        current_word = []
-        current_confidences = []
-        confidence_scores = []
-        
-        co = 0
-        for char in charPred:
-            # Space between words.
-            if spaces[co] == 1:  
-                if current_word:
-                    word = ''.join(current_word)
-                    avg_conf = sum(current_confidences)/len(current_confidences) if current_confidences else 0
-                    marked_word = self.mark_unknown(word, avg_conf)
-                    full_text.append(marked_word)
-                    current_word = []
-                    current_confidences = []
-                full_text.append(' ')
-            # New line.
-            elif spaces[co] == 2:  
-                if current_word:
-                    word = ''.join(current_word)
-                    avg_conf = sum(current_confidences)/len(current_confidences) if current_confidences else 0
-                    marked_word = self.mark_unknown(word, avg_conf)
-                    full_text.append(marked_word)
-                    current_word = []
-                    current_confidences = []
-                full_text.append('\n')
-            else:
-                current_word.append(char)
-                current_confidences.append(1.0)  # Placeholder confidence.
-            
-            co += 1
-        
-        # Adds the last word if it exists.
-        if current_word:
-            word = ''.join(current_word)
-            avg_conf = sum(current_confidences)/len(current_confidences) if current_confidences else 0
-            marked_word = self.mark_unknown(word, avg_conf)
-            full_text.append(marked_word)
-        
-        # Calculating statistics!
-        text = ''.join(full_text).strip()
-        words = [w for w in text.split() if not w.startswith('\n')]
-        known_words = [w for w in words if not w.startswith('*')]
-        accuracy = len(known_words)/len(words) if words else 0
-        
-        return {
-            'text': text,
-            'accuracy': accuracy,
-            'confidence': np.mean(confidence_scores) if confidence_scores else 0,
-            'char_count': len(text.replace('\n', '')),
-            'word_count': len(words),
-            'unknown_words': [w.strip('*') for w in words if w.startswith('*')]
-        }
-    
     def recognize_text(self):
         """
         Main OCR pipeline that processes an image file 
         and returns the recognized text with statistics. 
         """
         os.makedirs(BLOCKS_FOLDER, exist_ok=True)
-        for filename in os.listdir(BLOCKS_FOLDER):
-            file_path = os.path.join(BLOCKS_FOLDER, filename)
-            if os.path.isfile(file_path) or os.path.islink(file_path):
-                os.remove(file_path)
+        os.makedirs(LETTER_FOLDER, exist_ok=True)
+
+        # Clearning previous blocks and letter crops.
+        for folder in [BLOCKS_FOLDER, LETTER_FOLDER]:
+            for filename in os.listdir(folder):
+                file_path = os.path.join(folder, filename)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
         
         # Extracting blocks of text from the image.
         self.find_blocks(self.original_img)
-        exit(0)  # For testing purposes.
+        block_files = sorted([f for f in os.listdir(BLOCKS_FOLDER) if f.startswith('block_')],
+                        key=lambda x: int(x.split('_')[1].split('.')[0]))
 
-        # Recognizing each character added to the image folder.
-        charPred = []
-        char_data = []
-        for i in sorted(os.listdir(DUMP+"/")):
-            img_path = os.path.join(DUMP, i)
-            with Image.open(img_path) as image:
-                char, conf = self.recognize_character(np.asarray(image))
-                char_data.append((char, conf))
-            #os.remove(img_path)
-        
-        # Dysgraphia analysis.
-        dysgraphia_metrics = self.analyze_handwriting_consistency()
-        result = self.reconstruct_text(charPred, self.spaces)
-        result['dysgraphia_metrics'] = dysgraphia_metrics
-    
-        # Reconstructing the text with dictionary checking.
-        return self.reconstruct_text(charPred, self.spaces)
+        # Processing each block of text.
+        for block_idx, block_file in enumerate(block_files):
+            block_path = os.path.join(BLOCKS_FOLDER, block_file)
+            block_img = cv2.imread(block_path)
 
+            # Getting the Hough line above this block (to extend characters upwards).
+            current_block_top = int(block_file.split('_')[1].split('.')[0]) * self.line_height
+            upper_line_y = self.find_nearest_above_line(current_block_top)
+
+            # Getting the average block size for filtering.
+            im_average = get_image_average(self.coloured_original)
+
+            # Segmenting the block into words and characters.
+            _, word_data = process_image_block(block_img, im_average)
+
+            # Processing each word and character in the block.
+            for word_idx, word in enumerate(word_data):
+                for char_idx, char_bbox in enumerate(word['characters']):
+                    cx, cy, cx2, cy2 = char_bbox
+
+                    if upper_line_y is not None:
+                        adjusted_cy = max(0, upper_line_y - current_block_top)
+                    else:
+                        adjusted_cy = 0
+
+                    # Extending the character crop upwards.
+                    char_crop = block_img[adjusted_cy:cy2, cx:cx2]
+
+                    char_filename = f"block_{block_idx+1}_word_{word_idx+1}_char_{char_idx+1}.png"
+
+                    char_path = os.path.join(LETTER_FOLDER, char_filename)
+                    cv2.imwrite(char_path, char_crop)
+
+                    
 # ----------------------------------------------------------------------------#
 
 if __name__ == '__main__':
-    recognizer = GreekTextRecognizer("cuda")
+    recognizer = GreekTextRecognizer("cuda" if torch.cuda.is_available() else "cpu")
     result = recognizer.recognize_text()
     
-    print("\nFinal Results:")
-    print(f"Recognized Text: {result['text']}")
-    print(f"Accuracy: {result['accuracy']:.1%}")
-    print(f"Confidence: {result['confidence']:.2f}")
-    print(f"Character Count: {result['char_count']}")
-    print(f"Word Count: {result['word_count']}")
-    print(f"Unknown Words: {result['unknown_words']}")
-
-    print("\nDysgraphia Analysis:")
-    for metric, values in result['dysgraphia_metrics'].items():
-        print(f"{metric.upper()}:")
-        for k, v in values.items():
-            print(f"  {k}: {v:.4f}")
-
 # ----------------------------------------------------------------------------#
