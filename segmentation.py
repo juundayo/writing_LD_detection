@@ -89,8 +89,8 @@ def cluster_characters_to_words(rectangles):
             last_char = current_word.characters[-1]
             gap = rect.x - last_char.x2
             
-            # Use dynamic threshold with minimum fallback
-            if gap < max(dynamic_gap_threshold, 10):  # Never less than 10px
+            # Uses dynamic threshold with minimum fallback.
+            if gap < max(dynamic_gap_threshold, 10):  # Never less than 10px.
                 current_word.add_character(rect)
             else:
                 words.append(current_word)
@@ -101,6 +101,77 @@ def cluster_characters_to_words(rectangles):
         words.append(current_word)
     
     return words
+
+# ----------------------------------------------------------------------------#
+
+def split_large_boxes(rectangles, thresh_img):
+    """
+    Splits oversized rectangles at their thinnest vertical 
+    connection point. Returns an updated list of rectangles.
+    """
+    # Calculates median dimensions for thresholds.
+    areas = [rect.area for rect in rectangles]
+    widths = [rect.x2 - rect.x for rect in rectangles]
+    median_area = np.median(areas)
+    median_width = np.median(widths)
+
+    # Splitting thresholds.
+    area_threshold = median_area * 1.5
+    width_threshold = median_width * 1.7
+
+    new_rectangles = []
+    for rect in rectangles:
+        w = rect.x2 - rect.x
+        h = rect.y2 - rect.y
+
+        # Checking if the box needs splitting.
+        if rect.area > area_threshold and w > width_threshold:
+            # Extracting the region from the thresholded image.
+            crop = thresh_img[rect.y:rect.y2, rect.x:rect.x2]
+            if crop.size == 0:
+                new_rectangles.append(rect)
+                continue
+            
+            projection = np.sum(crop, axis=0) // 255
+            width = crop.shape[1]
+
+            left_bound = max(1, int(width * 0.1))
+            right_bound = min(width - 1, int(width * 0.9))
+            valid_region = projection[left_bound:right_bound]
+
+            if len(valid_region) == 0:
+                new_rectangles.append(rect)
+                continue
+
+            # Finding the minimal connection point.
+            min_idx = np.argmin(valid_region)
+            min_val = valid_region[min_idx]
+            abs_idx = left_bound + min_idx
+
+            max_proj = np.max(projection)
+            if min_val < 3 or min_val < 0.2 * max_proj:
+                print("AAAAAAA")
+                # Creating the left rectangle.
+                left_rect = Rectangle(
+                    rect.x, rect.y, rect.x + abs_idx, rect.y2, 
+                    abs_idx * h
+                )
+
+                # Creating the right rectangle.
+                right_rect = Rectangle(
+                    rect.x + abs_idx, rect.y, rect.x2, rect.y2, 
+                    (w - abs_idx) * h
+                )
+                
+                new_rectangles.extend([left_rect, right_rect])
+            else:
+                # If no valid split, keep the original rectangle.
+                new_rectangles.append(rect)
+        else:
+            # If the rectangle is small enough, keep it as is.
+            new_rectangles.append(rect)
+    
+    return new_rectangles
 
 # ----------------------------------------------------------------------------#
 
@@ -147,6 +218,9 @@ def character_segmentation(img, im_average=None):
             if rect.y2 > height_threshold  
         ]
 
+    # Splitting large boxes after all filtering.
+    filtered_rectangles = split_large_boxes(filtered_rectangles, thresh)
+
     # Clustering characters into words
     words = cluster_characters_to_words(filtered_rectangles)
     
@@ -186,7 +260,7 @@ def get_image_average(full_image):
 # ----------------------------------------------------------------------------#
 
 def testing():
-    png = "/home/ml3/Desktop/Thesis/BlockImages/block_1.png"
+    png = "/home/ml3/Desktop/Thesis/BlockImages/block_3.png"
     png2 = "/home/ml3/Desktop/Thesis/two_mimir.jpg"
 
     image = cv2.imread(png)
