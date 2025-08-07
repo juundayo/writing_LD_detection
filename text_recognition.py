@@ -15,7 +15,7 @@ from skimage import io
 from collections import defaultdict
 
 from vt_model import OCR
-from data_loading import class_mapping
+from class_renaming import class_mapping
 from segmentation import process_image_block, get_image_average, Rectangle, Word
 
 # ----------------------------------------------------------------------------#
@@ -37,12 +37,9 @@ class GreekTextRecognizer:
     def __init__(self, device):        
         # Loading the OCR model.
         self.device = device
-        #self.model = self.load_model(len(class_mapping))
-
-        self.letter_coord = {
-            'image_dimensions': None,
-            'letters': {}
-        }
+        self.classes = class_mapping.values()
+        self.idx_to_class = {i: cls for i, cls in enumerate(self.classes)}
+        self.model = self.load_model(len(self.classes))
 
         # Loading the dictionary.
         self.greek_dictionary = self.load_greek_dictionary(
@@ -56,10 +53,6 @@ class GreekTextRecognizer:
             legth = end - start
             print(f"Simple search took {legth:.6f} seconds.")
             exit(0)
-
-        # Inverse mapping from index to class name.
-        #self.classes = sorted(class_mapping.values())
-        #self.idx_to_class = {i: cls for i, cls in enumerate(self.classes)}
 
         # Loading the original image.
         self.coloured_original = cv2.imread(IMG_PATH)
@@ -399,7 +392,68 @@ class GreekTextRecognizer:
                     char_path = os.path.join(LETTER_FOLDER, char_filename)
                     cv2.imwrite(char_path, char_crop)
 
+        # Dictionary to store recognized text by block and word.
+        recognized_text = defaultdict(lambda: defaultdict(list))
+        char_predictions = {}
+
+        for char_file in os.listdir(LETTER_FOLDER):
+            parts = char_file.split('_')
+            block_num = int(parts[1])    # block_1_word_1_char_2.png -> block_1
+            word_num = int(parts[3])     # block_1_word_1_char_2.png -> word_1
+            char_num = int(parts[5].split('.')[0]) # [..]_char_2.png -> char_2
+
+            char_path = os.path.join(LETTER_FOLDER, char_file)
+            char_img = Image.open(char_path).convert('L')
+            char_tensor = self.transform(char_img).unsqueeze(0).to(self.device)
+
+            with torch.no_grad():
+                output = self.model(char_tensor)
+                _, predicted = torch.max(output.data, 1)
+                confidence = torch.nn.functional.softmax(output, dim=1)[0][predicted].item()
+                predicted_char = self.idx_to_class[predicted.item()]
+                char_predictions[(block_num, word_num, char_num)] = (predicted_char, confidence)
+            
+            max_block = max([k[0] for k in char_predictions.keys()]) if char_predictions else 0
+            
+            # Getting all words in this block.
+            for block_num in range(1, max_block + 1):
+                block_words = [k[1] for k in char_predictions.keys() if k[0] == block_num]
+                max_word = max(block_words) if block_words else 0
+
+                # Getting all characters for this word, sorted by position.
+                for word_num in range(1, max_word + 1):
+                    word_chars = []
+                    word_keys = [k for k in char_predictions.keys() 
+                                 if k[0] == block_num and k[1] == word_num]
+                    word_keys.sort(key=lambda x: x[2]) # Sorting by character number.
+
+                    for key in word_keys:
+                        char, confidence = char_predictions[key]
+                        word_chars.append(char)
                     
+                    if word_chars:
+                        recognized_text[block_num][word_num] = ' '.join(word_chars)
+            
+            final_output = []
+            for block_num in sorted(recognized_text.keys()):
+                block_sentence = []
+                prev_word_num = 0
+
+                for word_num in sorted(recognized_text[block_num].keys()):
+                    if word_num > prev_word_num + 1:
+                        block_sentence.append('') # Extra space for missing words.
+                    elif prev_word_num != 0:
+                        block_sentence.append(' ') # Normal space between words. 
+
+                    block_sentence.append(recognized_text[block_num][word_num])
+                    prev_word_num = word_num
+                
+                final_output.append(' '.join(block_sentence))
+            
+        print("\nRecognized Text:")
+        for i, sentence in enumerate(final_output, 1):
+            print(f"Block {i}: {sentence}")
+            
 # ----------------------------------------------------------------------------#
 
 if __name__ == '__main__':
