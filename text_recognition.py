@@ -7,6 +7,7 @@ import cv2
 import time
 import shutil
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 from pathlib import Path
 from torchvision import transforms
 from skimage.transform import (hough_line, hough_line_peaks)
@@ -16,7 +17,7 @@ from collections import defaultdict
 
 from vt_model import OCR
 from class_renaming import class_mapping
-from segmentation import process_image_block, get_image_average, Rectangle, Word
+from segmentation import process_image_block, get_image_average
 
 # ----------------------------------------------------------------------------#
 
@@ -24,12 +25,27 @@ MODEL_PATH = "/home/ml3/Desktop/Thesis/Models/rs1_tt2_v2.pth"
 
 LETTER_FOLDER = "/home/ml3/Desktop/Thesis/LetterFolder"
 BLOCKS_FOLDER = "/home/ml3/Desktop/Thesis/BlockImages"
+WRITING_DIS_FOLDER = "/home/ml3/Desktop/Thesis/WritingDisorder"
 
-IMG_PATH = "/home/ml3/Desktop/Thesis/two_mimir.jpg"
+IMG_PATH = "/home/ml3/Desktop/Thesis/Screenshot_15.png"
+#IMG_PATH = "/home/ml3/Desktop/Thesis/two_mimir.jpg"
 IMG_HEIGHT = 512
 IMG_WIDTH = 78
 
 SEARCH_TEST = False
+
+SIMILAR_PAIRS = {
+    'Ε': 'ε', 'ε': 'Ε',
+    'Θ': 'θ', 'θ': 'Θ',
+    'Ι': 'ι', 'ι': 'Ι',
+    'Κ': 'κ', 'κ': 'Κ',
+    'Ο': 'ο', 'ο': 'Ο',
+    'Π': 'π', 'π': 'Π',
+    'Ρ': 'ρ', 'ρ': 'Ρ',
+    'Τ': 'τ', 'τ': 'Τ',
+    'Χ': 'χ', 'χ': 'Χ',
+    'Ψ': 'ψ', 'ψ': 'Ψ'
+}
 
 # ----------------------------------------------------------------------------#
 
@@ -136,14 +152,13 @@ class GreekTextRecognizer:
         # Image loading and grayscale conversion.
         image = cv2.imread(IMG_PATH, cv2.IMREAD_GRAYSCALE)
 
-        # Adaptice histogram equalization for contrast.
+        # Adaptive histogram equalization for contrast.
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         image = cv2.GaussianBlur(image, (3, 3), 0)
         image = cv2.adaptiveThreshold(
             image, 255, 
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY_INV, 11, 2 # 11, 2 keeps the notebook lines.
-
         )
 
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
@@ -175,12 +190,12 @@ class GreekTextRecognizer:
         # Getting peaks.
         _, angles, distances = hough_line_peaks(
             hspace, theta, dist_array,
-            min_distance=20,
-            min_angle=5,
+            min_distance=35,
+            min_angle=10,
             threshold=0.4 * np.max(hspace)
         )
         
-        # Convert to numpy arrays.
+        # Converting to numpy arrays.
         if np.isscalar(distances):
             distances = np.array([distances])
         if np.isscalar(angles):
@@ -253,7 +268,10 @@ class GreekTextRecognizer:
         print(f"Average distance between lines: {avg_line_distance:.2f} pixels")
         print(f"Lines detected: {len(unique_lines)}")
         print("LINE COORDS")
+
+        line_coords = sorted(line_coords, key=lambda coord: float(coord[0]), reverse=True)
         print(line_coords)
+
         return avg_line_distance, line_coords
     
     def find_blocks(self, logo):
@@ -264,11 +282,11 @@ class GreekTextRecognizer:
         and 2 to 3.5.
         """
         VERTICAL_PADDING_RATIO = 0.1  # 7% of line height as padding.
-        LINE_EXTENSION_RATIO = 1.33    # Extend the block height by 1.25x of line height.
+        LINE_EXTENSION_RATIO = 1.33    # Extend the block height by 0.5 of line height.
         MIN_LINE_HEIGHT = 20           # Minimum height to consider a valid line.
 
-        line_ys = sorted([(float(y0),float(y1)) for (y0,y1) in self.line_coords])
-        
+        line_ys = sorted([(float(y0), float(y1)) for (y0, y1) in self.line_coords])     
+           
         # If no lines detected we use the whole image as one block.
         if not line_ys:
             return [[0, logo.shape[0], 0, logo.shape[1]]]
@@ -322,7 +340,104 @@ class GreekTextRecognizer:
         plt.axis('off')
         plt.show()
         plt.imsave("BLOCKS.png", color_logo)
+
+    def visualize_baseline_deviation(self, block_num, word_data):
+        """
+        Visualizes baseline deviation for words in a block compared to notebook lines.
+        Marks potential dysgraphia if deviation exceeds dynamic threshold.
+        Saves the plot as 'baseline_deviation_block_{block_num}.png'
+        """
+        # Create figure
+        fig, ax = plt.subplots(figsize=(12, 6))
         
+        # Get line positions for this block
+        line_ys = sorted([max(float(y0), float(y1)) for (y0, y1) in self.line_coords])
+        block_top = (block_num - 1) * 1.5 * self.line_height
+        block_bottom = block_num * 1.5 * self.line_height
+        
+        # Filter lines within this block's vertical range
+        block_lines = [y for y in line_ys if block_top <= y <= block_bottom]
+        
+        if not block_lines:
+            print(f"No lines detected in block {block_num}")
+            return
+        
+        # Calculate dynamic threshold (30% of line height)
+        threshold = 0.3 * self.line_height
+        
+        # Plot notebook lines
+        for line_y in block_lines:
+            ax.axhline(y=line_y, color='gray', linestyle='--', alpha=0.5)
+            ax.axhline(y=line_y + self.line_height, color='gray', linestyle='--', alpha=0.5)
+        
+        # Track baseline deviations
+        deviations = []
+        word_positions = []
+        word_texts = []
+        
+        # Process each word
+        for word_idx, word in enumerate(word_data):
+            if not word['characters']:
+                continue
+                
+            # Calculate word baseline (bottom of first character)
+            first_char = word['characters'][0]
+            baseline_y = first_char[3]  # cy2 (bottom y-coordinate)
+            
+            # Find nearest notebook line below this baseline
+            line_below = min([y for y in block_lines if y >= baseline_y], default=None)
+            if line_below is None:
+                line_below = max(block_lines)
+            
+            # Calculate deviation from line
+            deviation = abs(baseline_y - line_below)
+            deviations.append(deviation)
+            word_positions.append(word_idx)
+            word_texts.append(f"Word {word_idx+1}")
+            
+            # Mark if deviation exceeds threshold
+            if deviation > threshold:
+                ax.plot(word_idx, baseline_y, 'ro', markersize=8)
+                ax.text(word_idx, baseline_y + 5, "!", 
+                        color='red', ha='center', fontsize=12, weight='bold')
+        
+        # Plot deviation curve
+        ax.plot(word_positions, [w['characters'][0][3] if w['characters'] else 0 for w in word_data], 
+                'b-', label='Word Baselines')
+        
+        # Plot threshold zone (between lines)
+        for line_y in block_lines:
+            ax.add_patch(Rectangle((0, line_y - threshold), 
+                        len(word_data), 2*threshold,
+                        alpha=0.2, color='green', 
+                        label='Normal Zone' if line_y == block_lines[0] else ""))
+        
+        # Style plot
+        ax.set_title(f"Block {block_num} - Baseline Deviation Analysis")
+        ax.set_xlabel("Word Position")
+        ax.set_ylabel("Vertical Position (pixels)")
+        ax.set_xticks(word_positions)
+        ax.set_xticklabels(word_texts, rotation=45)
+        ax.legend()
+        ax.grid(True)
+        
+        # Checking for potential dysgraphia
+        dysgraphia_detected = any(d > threshold for d in deviations)
+        if dysgraphia_detected:
+            ax.text(0.5, 0.95, "Potential Dysgraphia Detected: Irregular Baselines", 
+                    transform=ax.transAxes, color='red', 
+                    ha='center', fontsize=12, weight='bold')
+            print(f"Block {block_num}: Potential dysgraphia detected - baseline deviations exceed threshold")
+        
+        plt.tight_layout()
+        
+        # Saving the figure.
+        output_path = os.path.join(WRITING_DIS_FOLDER, f"baseline_deviation_block_{block_num}.png")
+        plt.savefig(output_path, bbox_inches='tight', dpi=300)
+        print(f"Saved baseline deviation plot to {output_path}")
+        
+        plt.close()
+            
     def find_nearest_above_line(self, y_position):
         """Finds the nearest Hough line above the given y-position."""
         # Converting line_coords to y positions (taking the lower of the two y values).
@@ -346,9 +461,10 @@ class GreekTextRecognizer:
         """
         os.makedirs(BLOCKS_FOLDER, exist_ok=True)
         os.makedirs(LETTER_FOLDER, exist_ok=True)
+        os.makedirs(WRITING_DIS_FOLDER, exist_ok=True)
 
         # Clearning previous blocks and letter crops.
-        for folder in [BLOCKS_FOLDER, LETTER_FOLDER]:
+        for folder in [BLOCKS_FOLDER, LETTER_FOLDER, WRITING_DIS_FOLDER]:
             for filename in os.listdir(folder):
                 file_path = os.path.join(folder, filename)
                 if os.path.isfile(file_path):
@@ -373,6 +489,7 @@ class GreekTextRecognizer:
 
             # Segmenting the block into words and characters.
             _, word_data = process_image_block(block_img, im_average)
+            self.visualize_baseline_deviation(block_idx + 1, word_data)
 
             # Processing each word and character in the block.
             for word_idx, word in enumerate(word_data):
@@ -411,6 +528,10 @@ class GreekTextRecognizer:
                 _, predicted = torch.max(output.data, 1)
                 confidence = torch.nn.functional.softmax(output, dim=1)[0][predicted].item()
                 predicted_char = self.idx_to_class[predicted.item()]
+                
+                if predicted_char in SIMILAR_PAIRS and predicted_char.isupper():
+                    predicted_char = SIMILAR_PAIRS[predicted_char]
+                
                 char_predictions[(block_num, word_num, char_num)] = (predicted_char, confidence)
             
             max_block = max([k[0] for k in char_predictions.keys()]) if char_predictions else 0
@@ -432,23 +553,24 @@ class GreekTextRecognizer:
                         word_chars.append(char)
                     
                     if word_chars:
-                        recognized_text[block_num][word_num] = ' '.join(word_chars)
+                        recognized_text[block_num][word_num] = ''.join(word_chars)
             
             final_output = []
             for block_num in sorted(recognized_text.keys()):
-                block_sentence = []
+                block_words = []
                 prev_word_num = 0
 
                 for word_num in sorted(recognized_text[block_num].keys()):
+                    # Adding space if there are missing word numbers.
                     if word_num > prev_word_num + 1:
-                        block_sentence.append('') # Extra space for missing words.
-                    elif prev_word_num != 0:
-                        block_sentence.append(' ') # Normal space between words. 
-
-                    block_sentence.append(recognized_text[block_num][word_num])
+                        block_words.append('')
+                    
+                    word_text = recognized_text[block_num][word_num]
+                    block_words.append(word_text)
                     prev_word_num = word_num
                 
-                final_output.append(' '.join(block_sentence))
+                block_sentence = ' '.join(block_words)
+                final_output.append(block_sentence)
             
         print("\nRecognized Text:")
         for i, sentence in enumerate(final_output, 1):
