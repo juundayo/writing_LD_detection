@@ -150,7 +150,6 @@ def split_large_boxes(rectangles, thresh_img):
 
             max_proj = np.max(projection)
             if min_val < 3 or min_val < 0.2 * max_proj:
-                print("AAAAAAA")
                 # Creating the left rectangle.
                 left_rect = Rectangle(
                     rect.x, rect.y, rect.x + abs_idx, rect.y2, 
@@ -162,7 +161,7 @@ def split_large_boxes(rectangles, thresh_img):
                     rect.x + abs_idx, rect.y, rect.x2, rect.y2, 
                     (w - abs_idx) * h
                 )
-                
+                print("SPLIT")
                 new_rectangles.extend([left_rect, right_rect])
             else:
                 # If no valid split, keep the original rectangle.
@@ -200,7 +199,7 @@ def character_segmentation(img, im_average=None):
     # Initial area-based filtering
     filter_threshold = im_average * 0.33 if im_average is not None else running_average * 0.33
     filtered_rectangles = [rect for rect in rectangles if rect.area >= filter_threshold]
-
+    
     # Baseline-based tonos removal.
     if im_average is not None:
         # Calculating the average baseline (bottom y-coordinate) of characters.
@@ -217,7 +216,7 @@ def character_segmentation(img, im_average=None):
             rect for rect in filtered_rectangles
             if rect.y2 > height_threshold  
         ]
-
+    
     # Splitting large boxes after all filtering.
     filtered_rectangles = split_large_boxes(filtered_rectangles, thresh)
 
@@ -260,14 +259,15 @@ def get_image_average(full_image):
 # ----------------------------------------------------------------------------#
 
 def testing():
-    png = "/home/ml3/Desktop/Thesis/BlockImages/block_3.png"
-    png2 = "/home/ml3/Desktop/Thesis/two_mimir.jpg"
+    png = "/home/ml3/Desktop/Thesis/.venv/Screenshot_14.png"
+    png2 = "/home/ml3/Desktop/Thesis/.venv/Screenshot_14.png"
 
     image = cv2.imread(png)
     image2 = cv2.imread(png2)
 
     average = get_image_average(image2)
     segmented_img, word_data = process_image_block(image_block=image, im_average=average)
+
     segmented_img_rgb = cv2.cvtColor(segmented_img, cv2.COLOR_BGR2RGB)
     
     # Saving and showing results.
