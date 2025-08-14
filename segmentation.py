@@ -174,6 +174,43 @@ def split_large_boxes(rectangles, thresh_img):
 
 # ----------------------------------------------------------------------------#
 
+def remove_tonos_by_vertical_relation(rectangles):
+    """
+    Removes tonos by checking if there is a smaller box directly above a letter box.
+    """
+    if not rectangles:
+        return rectangles
+
+    # Sort rectangles bottom-to-top for stable checking
+    rectangles = sorted(rectangles, key=lambda r: r.y)
+
+    to_remove = set()
+    median_height = np.median([r.y2 - r.y for r in rectangles])
+
+    for base in rectangles:
+        base_height = base.y2 - base.y
+        base_center_x = (base.x + base.x2) / 2
+
+        # Look for smaller boxes above this base
+        for candidate in rectangles:
+            if candidate is base:
+                continue
+
+            # candidate must be above base but not too far
+            if candidate.y2 <= base.y and (base.y - candidate.y2) <= median_height:
+                # Horizontal overlap (allow slight offset)
+                horizontal_overlap = not (candidate.x2 < base.x - 2 or candidate.x > base.x2 + 2)
+
+                # Must be significantly smaller (likely tonos)
+                if (candidate.y2 - candidate.y) < 0.6 * base_height and horizontal_overlap:
+                    to_remove.add(candidate)
+    
+    # Return rectangles except the ones marked as tonos
+    return [r for r in rectangles if r not in to_remove]
+
+
+# ----------------------------------------------------------------------------#
+
 def character_segmentation(img, im_average=None):
     # Grayscale conversion and thresholding
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -199,23 +236,9 @@ def character_segmentation(img, im_average=None):
     # Initial area-based filtering
     filter_threshold = im_average * 0.33 if im_average is not None else running_average * 0.33
     filtered_rectangles = [rect for rect in rectangles if rect.area >= filter_threshold]
-    
-    # Baseline-based tonos removal.
-    if im_average is not None:
-        # Calculating the average baseline (bottom y-coordinate) of characters.
-        avg_baseline = np.mean([rect.y2 for rect in filtered_rectangles])
-        
-        # Calculating the average character height.
-        avg_height = np.mean([rect.y2 - rect.y for rect in filtered_rectangles])
-        
-        # Defining threshold for "too high".
-        height_threshold = avg_baseline - (0.5 * avg_height)
-        
-        # Filtering out characters significantly above the baseline.
-        filtered_rectangles = [
-            rect for rect in filtered_rectangles
-            if rect.y2 > height_threshold  
-        ]
+
+    # Tonos removal.
+    filtered_rectangles = remove_tonos_by_vertical_relation(filtered_rectangles)
     
     # Splitting large boxes after all filtering.
     filtered_rectangles = split_large_boxes(filtered_rectangles, thresh)
@@ -259,8 +282,8 @@ def get_image_average(full_image):
 # ----------------------------------------------------------------------------#
 
 def testing():
-    png = "/home/ml3/Desktop/Thesis/.venv/Screenshot_14.png"
-    png2 = "/home/ml3/Desktop/Thesis/.venv/Screenshot_14.png"
+    png = "/home/ml3/Desktop/Thesis/BlockImages/block_1.png"
+    png2 = "two_mimir.jpg"
 
     image = cv2.imread(png)
     image2 = cv2.imread(png2)
