@@ -174,7 +174,7 @@ class GreekTextRecognizer:
 
         return image
 
-    def hough_distance(self, image):
+    def hough_distance(self, image, SHOW_PLOTS=True):
         '''
         Dynamically detecting the lines of the 
         input image using a Hough transform that 
@@ -226,7 +226,7 @@ class GreekTextRecognizer:
         avg_line_distance = np.mean(line_distances) if line_distances else 0
         
         # Visualization.
-        if True:
+        if SHOW_PLOTS == True:
             fig, axes = plt.subplots(1, 3, figsize=(15, 6))
             ax = axes.ravel()
             
@@ -261,6 +261,7 @@ class GreekTextRecognizer:
             plt.tight_layout()
             plt.show()
             plt.savefig("HOUGH.png", bbox_inches='tight', pad_inches=0)
+            plt.close()
 
         # Storing the detected lines.
         self.detected_lines = [dist for dist, _ in unique_lines]
@@ -281,8 +282,8 @@ class GreekTextRecognizer:
         include text), it will create 2 boxes from 0 to 1.5
         and 2 to 3.5.
         """
-        VERTICAL_PADDING_RATIO = 0.1  # 7% of line height as padding.
-        LINE_EXTENSION_RATIO = 1.33    # Extend the block height by 0.5 of line height.
+        VERTICAL_PADDING_RATIO = 0.1   # 30% of line height as padding.
+        LINE_EXTENSION_RATIO = 1.33    # Extend the block height by 1.33 of line height.
         MIN_LINE_HEIGHT = 20           # Minimum height to consider a valid line.
 
         line_ys = sorted([(float(y0), float(y1)) for (y0, y1) in self.line_coords])     
@@ -341,103 +342,118 @@ class GreekTextRecognizer:
         plt.show()
         plt.imsave("BLOCKS.png", color_logo)
 
-    def visualize_baseline_deviation(self, block_num, word_data):
+    def wd1_baseline(self, block_num, word_data):
         """
-        Visualizes baseline deviation for words in a block compared to notebook lines.
-        Marks potential dysgraphia if deviation exceeds dynamic threshold.
-        Saves the plot as 'baseline_deviation_block_{block_num}.png'
+        Analyzes baseline consistency using the existing hough_distance() function
+        but applied to individual blocks for more accurate local baselines.
         """
-        # Create figure
+        # Load the block image
+        block_path = os.path.join(BLOCKS_FOLDER, f"block_{block_num}.png")
+        block_img = cv2.imread(block_path, cv2.IMREAD_GRAYSCALE)
+        if block_img is None:
+            return {'is_problematic': False}
+        
+        # Create visualization figure
         fig, ax = plt.subplots(figsize=(12, 6))
+        ax.imshow(block_img, cmap='gray')
         
-        # Get line positions for this block
-        line_ys = sorted([max(float(y0), float(y1)) for (y0, y1) in self.line_coords])
-        block_top = (block_num - 1) * 1.5 * self.line_height
-        block_bottom = block_num * 1.5 * self.line_height
+        # 1. GET HOUGH LINES FOR THIS BLOCK USING EXISTING FUNCTION ----------
+        # We need to temporarily modify the image for Hough detection
+        processed_block = self.input_with_lines(block_path)  # Reuse your preprocessing
+        _, block_line_coords = self.hough_distance(processed_block)  # Get lines for just this block
         
-        # Filter lines within this block's vertical range
-        block_lines = [y for y in line_ys if block_top <= y <= block_bottom]
+        # 2. DETERMINE REFERENCE BASELINE -----------------------------------
+        if block_line_coords:
+            # Get the bottom-most line (maximum y-coordinate)
+            bottom_line = max(block_line_coords, key=lambda coord: max(float(coord[0]), float(coord[1])))
+            y0, y1 = float(bottom_line[0]), float(bottom_line[1])
+            baseline_y = max(y0, y1)  # Use the lower of the two y-coordinates
+            
+            # Draw the reference line across the full block width
+            ax.axhline(y=baseline_y, color='blue', linestyle='--', 
+                    linewidth=2, alpha=0.7, label='Notebook Baseline')
+        else:
+            # Fallback: use bottom 10% of block as pseudo-baseline
+            baseline_y = 0.9 * block_img.shape[0]
+            ax.axhline(y=baseline_y, color='blue', linestyle='--', 
+                    linewidth=2, alpha=0.7, label='Estimated Baseline')
         
-        if not block_lines:
-            print(f"No lines detected in block {block_num}")
-            return
+        # 3. ANALYZE WORD BASELINE DEVIATIONS ------------------------------
+        DEVIATION_THRESHOLD = 0.10 * self.line_height  # 18% of standard line height
+        problematic_words = []
         
-        # Calculate dynamic threshold (30% of line height)
-        threshold = 0.3 * self.line_height
-        
-        # Plot notebook lines
-        for line_y in block_lines:
-            ax.axhline(y=line_y, color='gray', linestyle='--', alpha=0.5)
-            ax.axhline(y=line_y + self.line_height, color='gray', linestyle='--', alpha=0.5)
-        
-        # Track baseline deviations
-        deviations = []
-        word_positions = []
-        word_texts = []
-        
-        # Process each word
         for word_idx, word in enumerate(word_data):
             if not word['characters']:
                 continue
                 
-            # Calculate word baseline (bottom of first character)
-            first_char = word['characters'][0]
-            baseline_y = first_char[3]  # cy2 (bottom y-coordinate)
+            char_tops = [char[1] for char in word['characters']]     # cy1 values (top)
+            char_bottoms = [char[3] for char in word['characters']]  # cy2 values (bottom)
+
+            # Estimate median baseline ignoring deep descenders
+            median_height = np.median([b - t for t, b in zip(char_tops, char_bottoms)])
+            descender_limit = np.median(char_tops) + median_height * 1.1  # 10% tolerance
+
+            filtered_bottoms = [b for b in char_bottoms if b <= descender_limit]
+            if not filtered_bottoms:
+                filtered_bottoms = char_bottoms  # fallback if all were descenders
+
+            word_baseline = np.median(filtered_bottoms)
+
+
+            deviation = abs(word_baseline - baseline_y)
             
-            # Find nearest notebook line below this baseline
-            line_below = min([y for y in block_lines if y >= baseline_y], default=None)
-            if line_below is None:
-                line_below = max(block_lines)
+            # Get word bounding box coordinates
+            x_start = min(char[0] for char in word['characters'])
+            x_end = max(char[2] for char in word['characters'])
             
-            # Calculate deviation from line
-            deviation = abs(baseline_y - line_below)
-            deviations.append(deviation)
-            word_positions.append(word_idx)
-            word_texts.append(f"Word {word_idx+1}")
-            
-            # Mark if deviation exceeds threshold
-            if deviation > threshold:
-                ax.plot(word_idx, baseline_y, 'ro', markersize=8)
-                ax.text(word_idx, baseline_y + 5, "!", 
-                        color='red', ha='center', fontsize=12, weight='bold')
+            if deviation > DEVIATION_THRESHOLD:
+                problematic_words.append((word_idx, deviation))
+                
+                # Draw problematic word baseline in red
+                ax.plot([x_start, x_end], [word_baseline, word_baseline],
+                    'r-', linewidth=2, alpha=0.6, label='Deviated Baseline' if word_idx == 0 else "")
+                
+                # Draw deviation measurement
+                mid_x = (x_start + x_end) / 2
+                ax.plot([mid_x, mid_x], [baseline_y, word_baseline],
+                    'r:', linewidth=1, alpha=0.4)
+                ax.text(mid_x, (baseline_y + word_baseline)/2,
+                    f"{deviation:.1f}px", color='red', 
+                    ha='center', va='center')
+            else:
+                # Draw normal word baseline in green
+                ax.plot([x_start, x_end], [word_baseline, word_baseline],
+                    'g-', linewidth=1, alpha=0.4, label='Normal Baseline' if word_idx == 0 else "")
         
-        # Plot deviation curve
-        ax.plot(word_positions, [w['characters'][0][3] if w['characters'] else 0 for w in word_data], 
-                'b-', label='Word Baselines')
+        # 4. VISUALIZATION AND OUTPUT --------------------------------------
+        is_problematic = len(problematic_words) > 0
         
-        # Plot threshold zone (between lines)
-        for line_y in block_lines:
-            ax.add_patch(Rectangle((0, line_y - threshold), 
-                        len(word_data), 2*threshold,
-                        alpha=0.2, color='green', 
-                        label='Normal Zone' if line_y == block_lines[0] else ""))
+        # Only show legend if we have both types of baselines
+        if problematic_words and len(problematic_words) < len(word_data):
+            ax.legend()
         
-        # Style plot
-        ax.set_title(f"Block {block_num} - Baseline Deviation Analysis")
-        ax.set_xlabel("Word Position")
-        ax.set_ylabel("Vertical Position (pixels)")
-        ax.set_xticks(word_positions)
-        ax.set_xticklabels(word_texts, rotation=45)
-        ax.legend()
-        ax.grid(True)
+        ax.set_title(f"Block {block_num} - Baseline Analysis\n"
+                    f"Reference: y={baseline_y:.1f}px | "
+                    f"Threshold: ±{DEVIATION_THRESHOLD:.1f}px | "
+                    f"{'⚠️ Potential Writing Disorder' if is_problematic else '✓ Normal'}")
+        ax.axis('off')
         
-        # Checking for potential dysgraphia
-        dysgraphia_detected = any(d > threshold for d in deviations)
-        if dysgraphia_detected:
-            ax.text(0.5, 0.95, "Potential Dysgraphia Detected: Irregular Baselines", 
-                    transform=ax.transAxes, color='red', 
-                    ha='center', fontsize=12, weight='bold')
-            print(f"Block {block_num}: Potential dysgraphia detected - baseline deviations exceed threshold")
-        
-        plt.tight_layout()
-        
-        # Saving the figure.
-        output_path = os.path.join(WRITING_DIS_FOLDER, f"baseline_deviation_block_{block_num}.png")
-        plt.savefig(output_path, bbox_inches='tight', dpi=300)
-        print(f"Saved baseline deviation plot to {output_path}")
-        
+        # Save visualization
+        output_path = os.path.join(WRITING_DIS_FOLDER, 
+                                f"baseline_block_{block_num}.png")
+        plt.savefig(output_path, bbox_inches='tight', dpi=150)
         plt.close()
-            
+        
+        # Return analysis results
+        return {
+            'block_num': block_num,
+            'is_problematic': is_problematic,
+            'problematic_words': len(problematic_words),
+            'max_deviation': max(d[1] for d in problematic_words) if problematic_words else 0,
+            'reference_baseline': baseline_y,
+            'deviation_threshold': DEVIATION_THRESHOLD
+        }
+
     def find_nearest_above_line(self, y_position):
         """Finds the nearest Hough line above the given y-position."""
         # Converting line_coords to y positions (taking the lower of the two y values).
@@ -489,7 +505,7 @@ class GreekTextRecognizer:
 
             # Segmenting the block into words and characters.
             _, word_data = process_image_block(block_img, im_average)
-            self.visualize_baseline_deviation(block_idx + 1, word_data)
+            self.wd1_baseline(block_idx + 1, word_data)
 
             # Processing each word and character in the block.
             for word_idx, word in enumerate(word_data):
