@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import cv2
 import time
-import shutil
+import math
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from pathlib import Path
@@ -17,7 +17,7 @@ from collections import defaultdict
 
 from vt_model import OCR
 from class_renaming import class_mapping
-from segmentation import process_image_block, get_image_average
+from segmentation import process_image_block
 
 # ----------------------------------------------------------------------------#
 
@@ -27,8 +27,12 @@ LETTER_FOLDER = "/home/ml3/Desktop/Thesis/LetterFolder"
 BLOCKS_FOLDER = "/home/ml3/Desktop/Thesis/BlockImages"
 WRITING_DIS_FOLDER = "/home/ml3/Desktop/Thesis/WritingDisorder"
 
-IMG_PATH = "/home/ml3/Desktop/Thesis/Screenshot_15.png"
+#IMG_PATH = "/home/ml3/Desktop/Thesis/Screenshot_15.png"
 #IMG_PATH = "/home/ml3/Desktop/Thesis/two_mimir.jpg"
+#IMG_PATH = "/home/ml3/Desktop/Thesis/IMG_20250809_113620.jpg"
+#IMG_PATH = "/home/ml3/Desktop/Thesis/.venv/Screenshot_12.png"
+IMG_PATH = "/home/ml3/Desktop/Thesis/0_Test1.jpg"
+
 IMG_HEIGHT = 512
 IMG_WIDTH = 78
 
@@ -39,6 +43,7 @@ SIMILAR_PAIRS = {
     'Θ': 'θ', 'θ': 'Θ',
     'Ι': 'ι', 'ι': 'Ι',
     'Κ': 'κ', 'κ': 'Κ',
+    'Μ': 'μ', 'μ': 'Μ',
     'Ο': 'ο', 'ο': 'Ο',
     'Π': 'π', 'π': 'Π',
     'Ρ': 'ρ', 'ρ': 'Ρ',
@@ -88,14 +93,6 @@ class GreekTextRecognizer:
             transforms.Normalize([0.5], [0.5])
         ])
 
-        self.dysgraphia_features = {
-            'baseline_deviation': [],
-            'word_size_variation': [],
-            'intra_word_spacing': [],
-            'slant_consistency': [],
-            'random_capitals': []  # Placeholder.
-        }
-
     def load_model(self, num_classes):
         model = OCR(num_classes=num_classes).to(self.device)
         model.load_state_dict(torch.load(MODEL_PATH))
@@ -122,6 +119,7 @@ class GreekTextRecognizer:
                     dictionary.add(word)
 
         print('Loaded the dictionary!')
+        print()
         return dictionary
 
     def mark_unknown(self, word, confidence=0):
@@ -173,6 +171,48 @@ class GreekTextRecognizer:
         plt.savefig("INPUT_WITH_LINES.png", bbox_inches='tight', pad_inches=0)
 
         return image
+    
+    def slant_correct_character(self, char_img):
+        """
+        Corrects slant in an individual character image by detecting vertical strokes
+        and rotating to make them upright.
+        """
+        gray = char_img.copy()
+
+        # Binarize with Otsu
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+        # Edge detection for vertical stroke detection
+        edges = cv2.Canny(binary, 50, 150, apertureSize=3)
+
+        # Hough transform to detect lines
+        lines = cv2.HoughLines(edges, 1, np.pi / 180, threshold=10)
+        if lines is None:
+            return char_img  # No correction if no lines found
+
+        # Select near-vertical lines (80°–100°)
+        vertical_angles = []
+        for rho, theta in lines[:, 0]:
+            angle_deg = np.degrees(theta)
+            if 80 < angle_deg < 100:
+                vertical_angles.append(theta)
+
+        if not vertical_angles:
+            return char_img
+
+        # Compute rotation needed
+        avg_theta = np.mean(vertical_angles)
+        angle_correction = (np.pi / 2) - avg_theta
+        angle_correction_deg = np.degrees(angle_correction)
+
+        # Rotate around image center
+        h, w = char_img.shape[:2]
+        center = (w // 2, h // 2)
+        rot_mat = cv2.getRotationMatrix2D(center, angle_correction_deg, 1.0)
+        corrected = cv2.warpAffine(char_img, rot_mat, (w, h),
+                                flags=cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_REPLICATE)
+        return corrected
 
     def hough_distance(self, image, SHOW_PLOTS=True):
         '''
@@ -195,34 +235,55 @@ class GreekTextRecognizer:
             threshold=0.4 * np.max(hspace)
         )
         
-        # Converting to numpy arrays.
-        if np.isscalar(distances):
-            distances = np.array([distances])
-        if np.isscalar(angles):
-            angles = np.array([angles])
+        # Normalize angles to consistent range (-90° to 90°)
+        normalized_angles = []
+        normalized_distances = []
+        
+        for dist, angle in zip(distances, angles):
+            angle_deg = np.rad2deg(angle)
+            
+            # Convert near-vertical angles to negative range
+            if angle_deg > 45:  # If angle is between 45° and 90°
+                angle_deg -= 180  # Convert to negative equivalent
+                dist = -dist     # Flip distance sign to maintain line position
+            
+            normalized_angles.append(np.deg2rad(angle_deg))
+            normalized_distances.append(dist)
+        
+        # Now use normalized_angles and normalized_distances for further processing
+        angles = np.array(normalized_angles)
+        distances = np.array(normalized_distances)
         
         # Sorting lines by distance (y-coordinate).
         sorted_indices = np.argsort(distances)
         sorted_distances = distances[sorted_indices]
         sorted_angles = angles[sorted_indices]
+
+        # Estimating the average line spacing.
+        if len(sorted_distances) > 1:
+            rough_diffs = np.diff(sorted_distances)
+            avg_line_distance = np.median(rough_diffs)
+        else:
+            avg_line_distance = 20  # Fallback for single-line cases.
         
+        # Adaptive minimum line separation.
+        min_line_separation = max(2, 0.6 * avg_line_distance)
+
         # Filtering out nearly identical lines.
         unique_lines = []
         prev_dist = -np.inf
-        min_line_separation = max(2, 0.05 * image.shape[0])
         
         for curr_dist, angle in zip(sorted_distances, sorted_angles):
             if abs(curr_dist - prev_dist) >= min_line_separation:
                 unique_lines.append((curr_dist, angle))
                 prev_dist = curr_dist
-        
-        # Calculating the average distance between lines.
-        line_distances = []
+
         line_coords = []
+        line_distances = []
         if len(unique_lines) > 1:
             line_distances = [unique_lines[i][0] - unique_lines[i-1][0] 
                             for i in range(1, len(unique_lines))]
-        
+                    
         avg_line_distance = np.mean(line_distances) if line_distances else 0
         
         # Visualization.
@@ -262,17 +323,8 @@ class GreekTextRecognizer:
             plt.show()
             plt.savefig("HOUGH.png", bbox_inches='tight', pad_inches=0)
             plt.close()
-
-        # Storing the detected lines.
-        self.detected_lines = [dist for dist, _ in unique_lines]
         
-        print(f"Average distance between lines: {avg_line_distance:.2f} pixels")
-        print(f"Lines detected: {len(unique_lines)}")
-        print("LINE COORDS")
-
         line_coords = sorted(line_coords, key=lambda coord: float(coord[0]), reverse=True)
-        print(line_coords)
-
         return avg_line_distance, line_coords
     
     def find_blocks(self, logo):
@@ -282,7 +334,7 @@ class GreekTextRecognizer:
         include text), it will create 2 boxes from 0 to 1.5
         and 2 to 3.5.
         """
-        VERTICAL_PADDING_RATIO = 0.1   # 30% of line height as padding.
+        VERTICAL_PADDING_RATIO = 0.2   # 30% of line height as padding.
         LINE_EXTENSION_RATIO = 1.33    # Extend the block height by 1.33 of line height.
         MIN_LINE_HEIGHT = 20           # Minimum height to consider a valid line.
 
@@ -354,15 +406,15 @@ class GreekTextRecognizer:
             return {'is_problematic': False}
         
         # Create visualization figure
-        fig, ax = plt.subplots(figsize=(12, 6))
+        _, ax = plt.subplots(figsize=(12, 6))
         ax.imshow(block_img, cmap='gray')
         
-        # 1. GET HOUGH LINES FOR THIS BLOCK USING EXISTING FUNCTION ----------
+        # 1.  HOUGH LINES FOR THIS BLOCK -------------------------------------
         # We need to temporarily modify the image for Hough detection
         processed_block = self.input_with_lines(block_path)  # Reuse your preprocessing
         _, block_line_coords = self.hough_distance(processed_block)  # Get lines for just this block
         
-        # 2. DETERMINE REFERENCE BASELINE -----------------------------------
+        # 2. DETERMINING REFERENCE BASELINE ----------------------------------
         if block_line_coords:
             # Get the bottom-most line (maximum y-coordinate)
             bottom_line = max(block_line_coords, key=lambda coord: max(float(coord[0]), float(coord[1])))
@@ -378,8 +430,8 @@ class GreekTextRecognizer:
             ax.axhline(y=baseline_y, color='blue', linestyle='--', 
                     linewidth=2, alpha=0.7, label='Estimated Baseline')
         
-        # 3. ANALYZE WORD BASELINE DEVIATIONS ------------------------------
-        DEVIATION_THRESHOLD = 0.10 * self.line_height  # 18% of standard line height
+        # 3. ANALYZING WORD BASELINE DEVIATIONS ----------------------------
+        DEVIATION_THRESHOLD = 0.2 * self.line_height  # 20% of standard line height
         problematic_words = []
         
         for word_idx, word in enumerate(word_data):
@@ -391,29 +443,28 @@ class GreekTextRecognizer:
 
             # Estimate median baseline ignoring deep descenders
             median_height = np.median([b - t for t, b in zip(char_tops, char_bottoms)])
-            descender_limit = np.median(char_tops) + median_height * 1.1  # 10% tolerance
+            descender_limit = np.median(char_tops) + median_height * 1.1  # 11% tolerance.
 
             filtered_bottoms = [b for b in char_bottoms if b <= descender_limit]
             if not filtered_bottoms:
-                filtered_bottoms = char_bottoms  # fallback if all were descenders
+                filtered_bottoms = char_bottoms  # Fallback if all were descenders.
 
             word_baseline = np.median(filtered_bottoms)
 
-
             deviation = abs(word_baseline - baseline_y)
             
-            # Get word bounding box coordinates
+            # Word bounding box coordinates.
             x_start = min(char[0] for char in word['characters'])
             x_end = max(char[2] for char in word['characters'])
             
             if deviation > DEVIATION_THRESHOLD:
                 problematic_words.append((word_idx, deviation))
                 
-                # Draw problematic word baseline in red
+                # Drawing problematic word baseline in red.
                 ax.plot([x_start, x_end], [word_baseline, word_baseline],
                     'r-', linewidth=2, alpha=0.6, label='Deviated Baseline' if word_idx == 0 else "")
                 
-                # Draw deviation measurement
+                # Drawing deviation measurement.
                 mid_x = (x_start + x_end) / 2
                 ax.plot([mid_x, mid_x], [baseline_y, word_baseline],
                     'r:', linewidth=1, alpha=0.4)
@@ -421,14 +472,14 @@ class GreekTextRecognizer:
                     f"{deviation:.1f}px", color='red', 
                     ha='center', va='center')
             else:
-                # Draw normal word baseline in green
+                # Drawing normal word baseline in green.
                 ax.plot([x_start, x_end], [word_baseline, word_baseline],
                     'g-', linewidth=1, alpha=0.4, label='Normal Baseline' if word_idx == 0 else "")
         
         # 4. VISUALIZATION AND OUTPUT --------------------------------------
         is_problematic = len(problematic_words) > 0
         
-        # Only show legend if we have both types of baselines
+        # Only show legend if we have both types of baselines.
         if problematic_words and len(problematic_words) < len(word_data):
             ax.legend()
         
@@ -438,13 +489,13 @@ class GreekTextRecognizer:
                     f"{'⚠️ Potential Writing Disorder' if is_problematic else '✓ Normal'}")
         ax.axis('off')
         
-        # Save visualization
+        # Saving the visualization.
         output_path = os.path.join(WRITING_DIS_FOLDER, 
                                 f"baseline_block_{block_num}.png")
         plt.savefig(output_path, bbox_inches='tight', dpi=150)
         plt.close()
         
-        # Return analysis results
+        # Debugging analysis results.
         return {
             'block_num': block_num,
             'is_problematic': is_problematic,
@@ -452,6 +503,89 @@ class GreekTextRecognizer:
             'max_deviation': max(d[1] for d in problematic_words) if problematic_words else 0,
             'reference_baseline': baseline_y,
             'deviation_threshold': DEVIATION_THRESHOLD
+        }
+
+    def wd2_uppercase_lowercase(self, block_num, word_data):
+        """
+        Flags words with more than one capital letter (excluding the first letter).
+        Parameters:
+            block_num (int): Current block number
+            word_data (list): List of word dicts with 'characters' and 'predictions'
+        Returns:
+            dict: Results with flagged words
+        """
+        flagged_words = []
+
+        for w_idx, word in enumerate(word_data):
+            if not word.get('predictions'):
+                continue
+
+            predicted_chars = [p[0] for p in word['predictions']]  # (char, conf)
+            capitals = [c for i, c in enumerate(predicted_chars) if c.isupper() and i != 0]
+
+            if len(capitals) > 0:
+                flagged_words.append({
+                    'word_index': w_idx,
+                    'word_text': ''.join(predicted_chars),
+                    'extra_capitals': capitals
+                })
+
+        return {
+            'block_num': block_num,
+            'wd2_flagged': flagged_words,
+            'wd2_issue_count': len(flagged_words)
+        }
+    
+    def wd3_spaces(self, block_num, word_data):
+        """
+        Flags potentially problematic spacing between words.
+        Uses bounding boxes to measure horizontal gaps.
+        Parameters:
+            block_num (int)
+            word_data (list): Each word has 'characters' with bounding boxes
+        Returns:
+            dict: Results with flagged gaps
+        """
+        word_positions = []
+        for w_idx, word in enumerate(word_data):
+            if not word.get('characters'):
+                continue
+            x_start = min(c[0] for c in word['characters'])  # left
+            x_end = max(c[2] for c in word['characters'])    # right
+            word_positions.append((w_idx, x_start, x_end))
+
+        if len(word_positions) < 2:
+            return {'block_num': block_num, 'wd3_flagged': [], 'wd3_issue_count': 0}
+
+        # Sort by position
+        word_positions.sort(key=lambda x: x[1])
+
+        # Compute gaps
+        gaps = []
+        for i in range(len(word_positions) - 1):
+            gap = word_positions[i + 1][1] - word_positions[i][2]
+            gaps.append(gap)
+
+        if not gaps:
+            return {'block_num': block_num, 'wd3_flagged': [], 'wd3_issue_count': 0}
+
+        median_gap = np.median(gaps)
+        min_gap_thresh = 0.5 * median_gap
+        max_gap_thresh = 2.0 * median_gap
+
+        flagged_gaps = []
+        for i, gap in enumerate(gaps):
+            if gap < min_gap_thresh or gap > max_gap_thresh:
+                flagged_gaps.append({
+                    'between_words': (word_positions[i][0], word_positions[i + 1][0]),
+                    'gap': gap,
+                    'median_gap': median_gap
+                })
+
+        return {
+            'block_num': block_num,
+            'wd3_flagged': flagged_gaps,
+            'wd3_issue_count': len(flagged_gaps)
         }
 
     def find_nearest_above_line(self, y_position):
@@ -501,10 +635,11 @@ class GreekTextRecognizer:
             upper_line_y = self.find_nearest_above_line(current_block_top)
 
             # Getting the average block size for filtering.
-            im_average = get_image_average(self.coloured_original)
+            #im_average = get_image_average(self.coloured_original)
 
             # Segmenting the block into words and characters.
-            _, word_data = process_image_block(block_img, im_average)
+            _, word_data = process_image_block(block_img)
+
             self.wd1_baseline(block_idx + 1, word_data)
 
             # Processing each word and character in the block.
@@ -536,8 +671,11 @@ class GreekTextRecognizer:
             char_num = int(parts[5].split('.')[0]) # [..]_char_2.png -> char_2
 
             char_path = os.path.join(LETTER_FOLDER, char_file)
-            char_img = Image.open(char_path).convert('L')
-            char_tensor = self.transform(char_img).unsqueeze(0).to(self.device)
+
+            char_img = cv2.imread(char_path, cv2.IMREAD_GRAYSCALE)
+            #char_img = self.slant_correct_character(char_img) # Character slant correction.
+            char_pil = Image.fromarray(char_img)
+            char_tensor = self.transform(char_pil).unsqueeze(0).to(self.device)
 
             with torch.no_grad():
                 output = self.model(char_tensor)
