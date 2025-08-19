@@ -45,12 +45,12 @@ class Word:
 
 # ----------------------------------------------------------------------------#
 
-def pre_processing(myImage, im_average=None):
+def pre_processing(myImage):
     grayImg = cv2.cvtColor(myImage, cv2.COLOR_BGR2GRAY)
     ret, thresh1 = cv2.threshold(grayImg, 0, 255, 
                                 cv2.THRESH_OTSU | cv2.THRESH_BINARY_INV)
     
-    print(f'The threshold value applied to the image is: {ret} ')
+    #print(f'The threshold value applied to the image is: {ret} ')
 
     horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (18, 18))
     dilation = cv2.dilate(thresh1, horizontal_kernel, iterations=1)
@@ -59,7 +59,7 @@ def pre_processing(myImage, im_average=None):
                                               cv2.CHAIN_APPROX_NONE)
     im2 = myImage.copy()
     
-    return character_segmentation(im2, im_average)
+    return character_segmentation(im2)
 
 # ----------------------------------------------------------------------------#
 
@@ -161,7 +161,7 @@ def split_large_boxes(rectangles, thresh_img):
                     rect.x + abs_idx, rect.y, rect.x2, rect.y2, 
                     (w - abs_idx) * h
                 )
-                print("SPLIT")
+                
                 new_rectangles.extend([left_rect, right_rect])
             else:
                 # If no valid split, keep the original rectangle.
@@ -208,13 +208,20 @@ def remove_tonos_by_vertical_relation(rectangles):
     # Return rectangles except the ones marked as tonos
     return [r for r in rectangles if r not in to_remove]
 
-
 # ----------------------------------------------------------------------------#
 
-def character_segmentation(img, im_average=None):
+def character_segmentation(img):
     # Grayscale conversion and thresholding
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
+
+    '''
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (100,1))
+    detected_lines = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=1)
+    cnts, _ = cv2.findContours(detected_lines, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for c in cnts:
+        cv2.drawContours(thresh, [c], -1, (0,0,0), -1)
+    '''
 
     # Morphological operations
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1,5))
@@ -234,7 +241,7 @@ def character_segmentation(img, im_average=None):
         running_average = running_average + (area - running_average) / (i + 1)
 
     # Initial area-based filtering
-    filter_threshold = im_average * 0.33 if im_average is not None else running_average * 0.33
+    filter_threshold = running_average * 0.20
     filtered_rectangles = [rect for rect in rectangles if rect.area >= filter_threshold]
 
     # Tonos removal.
@@ -251,7 +258,7 @@ def character_segmentation(img, im_average=None):
     for rect in filtered_rectangles:
         cv2.rectangle(vis_img, (rect.x, rect.y), (rect.x2, rect.y2), (0, 255, 0), 2)
     
-    # Prepare word data
+    # Preparing word data.
     word_data = []
     for i, word in enumerate(words):
         x1, y1, x2, y2 = word.get_bbox()
@@ -266,30 +273,31 @@ def character_segmentation(img, im_average=None):
 
 # ----------------------------------------------------------------------------#
 
-def process_image_block(image_block, im_average):
+def process_image_block(image_block):
     """Main processing function to be called externally."""
-    segmented_img, word_data, _ = pre_processing(image_block, im_average)
+    segmented_img, word_data, _ = pre_processing(image_block)
 
     return segmented_img, word_data
 
-# ----------------------------------------------------------------------------#
-
-def get_image_average(full_image):
-    _, _, running_average = pre_processing(full_image)
-
-    return running_average
+def show_histogram(img, title="Histogram"):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+    plt.figure()
+    plt.title(title)
+    plt.plot(hist)
+    plt.xlim([0, 256])
+    plt.show()
+    plt.savefig(f"{title}.png", bbox_inches='tight', pad_inches=0)
 
 # ----------------------------------------------------------------------------#
 
 def testing():
-    png = "/home/ml3/Desktop/Thesis/BlockImages/block_1.png"
-    png2 = "two_mimir.jpg"
+    png = "/home/ml3/Desktop/Thesis/BlockImages/block_3.png"
+    #png = "/home/ml3/Desktop/Thesis/Screenshot_15.png"
 
     image = cv2.imread(png)
-    image2 = cv2.imread(png2)
 
-    average = get_image_average(image2)
-    segmented_img, word_data = process_image_block(image_block=image, im_average=average)
+    segmented_img, word_data = process_image_block(image_block=image)
 
     segmented_img_rgb = cv2.cvtColor(segmented_img, cv2.COLOR_BGR2RGB)
     
@@ -298,6 +306,13 @@ def testing():
     plt.axis("off")
     plt.savefig("0_segmented.png", bbox_inches='tight', pad_inches=0)
     plt.show()
+
+    # Example usage:
+    manual = cv2.imread("/home/ml3/Desktop/Thesis/Screenshot_15.png")
+    auto = cv2.imread("/home/ml3/Desktop/Thesis/BlockImages/block_1.png")
+
+    show_histogram(manual, "Manual Crop Histogram")
+    show_histogram(auto, "Auto Crop Histogram")
 
 # ----------------------------------------------------------------------------#
 
