@@ -45,6 +45,25 @@ class Word:
 
 # ----------------------------------------------------------------------------#
 
+def remove_horizontal_lines(thresh):
+    """
+    Detects and removes horizontal notebook lines using morphological operations.
+    Returns a cleaned threshold image.
+    """
+    # Define a long horizontal kernel based on image width
+    cols = thresh.shape[1]
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (cols // 20, 1))
+    
+    # Detect horizontal lines
+    detected_lines = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=1)
+    
+    # Subtract lines from the thresholded image
+    cleaned = cv2.subtract(thresh, detected_lines)
+    
+    return cleaned
+
+# ----------------------------------------------------------------------------#
+
 def pre_processing(myImage):
     grayImg = cv2.cvtColor(myImage, cv2.COLOR_BGR2GRAY)
     ret, thresh1 = cv2.threshold(grayImg, 0, 255, 
@@ -77,7 +96,7 @@ def cluster_characters_to_words(rectangles):
     avg_width = np.mean([r.x2 - r.x for r in sorted_rects])
     
     # Dynamic gap threshold (e.g., 0.5 * average width)
-    dynamic_gap_threshold = avg_width * 0.5
+    dynamic_gap_threshold = avg_width * 0.77
     
     words = []
     current_word = Word()
@@ -112,8 +131,11 @@ def split_large_boxes(rectangles, thresh_img):
     # Calculates median dimensions for thresholds.
     areas = [rect.area for rect in rectangles]
     widths = [rect.x2 - rect.x for rect in rectangles]
+    heights = [rect.y2 - rect.y for rect in rectangles]
+
     median_area = np.median(areas)
     median_width = np.median(widths)
+    meadian_height = np.median(heights)
 
     # Splitting thresholds.
     area_threshold = median_area * 1.5
@@ -135,8 +157,8 @@ def split_large_boxes(rectangles, thresh_img):
             projection = np.sum(crop, axis=0) // 255
             width = crop.shape[1]
 
-            left_bound = max(1, int(width * 0.1))
-            right_bound = min(width - 1, int(width * 0.9))
+            left_bound = max(1, int(width * 0.15))
+            right_bound = min(width - 1, int(width * 0.95))
             valid_region = projection[left_bound:right_bound]
 
             if len(valid_region) == 0:
@@ -149,27 +171,23 @@ def split_large_boxes(rectangles, thresh_img):
             abs_idx = left_bound + min_idx
 
             max_proj = np.max(projection)
-            if min_val < 3 or min_val < 0.2 * max_proj:
-                # Creating the left rectangle.
-                left_rect = Rectangle(
-                    rect.x, rect.y, rect.x + abs_idx, rect.y2, 
-                    abs_idx * h
-                )
+            aspect_ratio = w / float(h)
 
-                # Creating the right rectangle.
-                right_rect = Rectangle(
-                    rect.x + abs_idx, rect.y, rect.x2, rect.y2, 
-                    (w - abs_idx) * h
-                )
+            if (aspect_ratio > 1.4 and rect.area > 1.5 * median_area
+                and min_val < 0.3 * max_proj):
+                # Left rectangle.
+                left_rect = Rectangle(rect.x, rect.y, 
+                                      rect.x + abs_idx, rect.y2, abs_idx * h)
+                # Right rectange.
+                right_rect = Rectangle(rect.x + abs_idx, rect.y, 
+                                       rect.x2, rect.y2, (w - abs_idx) * h)
                 
                 new_rectangles.extend([left_rect, right_rect])
             else:
-                # If no valid split, keep the original rectangle.
                 new_rectangles.append(rect)
         else:
-            # If the rectangle is small enough, keep it as is.
             new_rectangles.append(rect)
-    
+
     return new_rectangles
 
 # ----------------------------------------------------------------------------#
@@ -215,13 +233,7 @@ def character_segmentation(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
 
-    '''
-    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (100,1))
-    detected_lines = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=1)
-    cnts, _ = cv2.findContours(detected_lines, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    for c in cnts:
-        cv2.drawContours(thresh, [c], -1, (0,0,0), -1)
-    '''
+    thresh = remove_horizontal_lines(thresh)
 
     # Morphological operations
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1,5))
@@ -279,21 +291,12 @@ def process_image_block(image_block):
 
     return segmented_img, word_data
 
-def show_histogram(img, title="Histogram"):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
-    plt.figure()
-    plt.title(title)
-    plt.plot(hist)
-    plt.xlim([0, 256])
-    plt.show()
-    plt.savefig(f"{title}.png", bbox_inches='tight', pad_inches=0)
-
 # ----------------------------------------------------------------------------#
 
 def testing():
-    png = "/home/ml3/Desktop/Thesis/BlockImages/block_3.png"
+    #png = "/home/ml3/Desktop/Thesis/BlockImages/block_3.png"
     #png = "/home/ml3/Desktop/Thesis/Screenshot_15.png"
+    png = "/home/ml3/Desktop/Thesis/BlockImages/block_3.png"
 
     image = cv2.imread(png)
 
@@ -306,13 +309,6 @@ def testing():
     plt.axis("off")
     plt.savefig("0_segmented.png", bbox_inches='tight', pad_inches=0)
     plt.show()
-
-    # Example usage:
-    manual = cv2.imread("/home/ml3/Desktop/Thesis/Screenshot_15.png")
-    auto = cv2.imread("/home/ml3/Desktop/Thesis/BlockImages/block_1.png")
-
-    show_histogram(manual, "Manual Crop Histogram")
-    show_histogram(auto, "Auto Crop Histogram")
 
 # ----------------------------------------------------------------------------#
 
