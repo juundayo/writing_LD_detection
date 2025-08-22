@@ -11,14 +11,13 @@ from sklearn.model_selection import train_test_split
 
 from class_renaming import class_mapping
 
-# ----------------------------------------------------------------------------#
+# ---------------------------------------------------------------------------- #
 
-AUGMENTATIONS = 2500
-SPACE_AUGMENTATIONS = 2500
-RANDOM_STATE = 222
-AUGMENT = False
+AUGMENTATIONS = 1500
+RANDOM_STATE = 101
+AUGMENT = True
 
-# ----------------------------------------------------------------------------#
+# ---------------------------------------------------------------------------- #
 
 '''
 Data loading and preparation.
@@ -40,15 +39,20 @@ def dataAugmentation(image_path, aug_number):
     """
     Augmentation function used to take each letter and create a new randomly
     augmented version of it through:
-        → Random rotation (-7 to 7).
-        → Random contrast (1 to 1.5).
+        → Random rotation (-6 to 6).
+        → Random contrast (1 to 1.6).
     """
     try:
         original_img = Image.open(image_path).convert('L')
-        
+
+        # Dynamic upper y-axis extension. 
+        base_name = os.path.basename(image_path)
+        if base_name.endswith(".tif") and "_" in base_name:
+            original_img = extend_upper_y_axis(original_img)
+
         for i in range(aug_number):
-            ''' Random rotation (-7 to +7 degrees). '''
-            angle = random.uniform(-7, 7)
+            ''' Random rotation (-6 to +6 degrees). '''
+            angle = random.uniform(-6, 6)
             img_array = np.array(original_img)
             
             # Image center.
@@ -67,8 +71,8 @@ def dataAugmentation(image_path, aug_number):
             # Converting back to PIL Image!
             rotated_img = Image.fromarray(rotated_array)
             
-            ''' Random contrast (1.0 to 1.5). '''
-            contrast_factor = random.uniform(1.0, 1.5)
+            ''' Random contrast (1.0 to 1.6). '''
+            contrast_factor = random.uniform(1.0, 1.6)
             contrast_enhancer = ImageEnhance.Contrast(rotated_img)
             contrast_img = contrast_enhancer.enhance(contrast_factor)
             
@@ -79,6 +83,33 @@ def dataAugmentation(image_path, aug_number):
             
     except Exception as e:
         print(f"Error augmenting image {image_path}: {str(e)}")
+
+# ----------------------------------------------------------------------------#
+
+def extend_upper_y_axis(img: Image.Image) -> Image.Image:
+    """
+    Extends the upper y-axis of the image with white background.
+    Random extension up to 2.5x original height.
+    """
+    width, height = img.size
+    
+    # Maximum new height (up to 2.5x original).
+    max_extra_height = int(1.5 * height) 
+    extra_height = random.randint(0, max_extra_height)
+    
+    # If no extension, return original
+    if extra_height == 0:
+        return img
+    
+    new_height = height + extra_height
+    
+    # Create white background
+    new_img = Image.new("L", (width, new_height), color=255)
+    
+    # Paste original image at (0, extra_height)
+    new_img.paste(img, (0, extra_height))
+    
+    return new_img
 
 # ----------------------------------------------------------------------------#
 
@@ -151,12 +182,11 @@ class GreekLetterDataset(Dataset):
             
             '''Creating augmentations for the train and test dataset.'''
             if AUGMENT:
-                aug_number = SPACE_AUGMENTATIONS if class_name == 'space' else AUGMENTATIONS
-
                 print("Creating augmentations...")
                 # Augmentations in the train set.
+                print(f"Creating augmentations for the train set for class: {class_name}")
                 for path in train_imgs:
-                    for i in range(aug_number):
+                    for i in range(AUGMENTATIONS):
                         dataAugmentation(path, 1)
                         base, ext = os.path.splitext(path)
                         aug_path = f"{base}_aug0{ext}"
@@ -168,7 +198,7 @@ class GreekLetterDataset(Dataset):
 
                 # Augmentations in the test set.
                 for path in test_imgs:
-                    for i in range(aug_number):
+                    for i in range(AUGMENTATIONS):
                         dataAugmentation(path, 1)
                         base, ext = os.path.splitext(path)
                         aug_path = f"{base}_aug0{ext}"
@@ -205,7 +235,9 @@ class GreekLetterDataset(Dataset):
             GreekLetterSubDataset(self.test_dataset, self.transform, 
                                   self.original_to_idx)
         )
-    
+
+# ----------------------------------------------------------------------------#
+
 class GreekLetterSubDataset(Dataset):
     def __init__(self, samples, transform, original_to_idx):
         self.samples = samples
@@ -253,7 +285,7 @@ def plot_augmentation_samples(root_dir, num_folders=3, num_augmentations=3):
         axes = [axes] 
     
     for i, folder in enumerate(selected_folders):
-        all_files = [f for f in os.listdir(folder) if f.endswith(('.png', '.jpg', '.jpeg'))]
+        all_files = [f for f in os.listdir(folder) if f.endswith(('.png', '.jpg', '.jpeg', 'tif'))]
         
         # Finding original images (those without '_aug' in name).
         original_images = [f for f in all_files if '_aug' not in f]
