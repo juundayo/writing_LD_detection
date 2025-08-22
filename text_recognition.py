@@ -21,17 +21,19 @@ from segmentation import process_image_block
 
 # ----------------------------------------------------------------------------#
 
-MODEL_PATH = "/home/ml3/Desktop/Thesis/Models/rs1_tt2_v2.pth"
+#MODEL_PATH = "/home/ml3/Desktop/Thesis/Models/rs1_tt2_v2.pth"
+MODEL_PATH = "/home/ml3/Desktop/Thesis/Models/822_newdata.pth"
 
 LETTER_FOLDER = "/home/ml3/Desktop/Thesis/LetterFolder"
 BLOCKS_FOLDER = "/home/ml3/Desktop/Thesis/BlockImages"
 WRITING_DIS_FOLDER = "/home/ml3/Desktop/Thesis/WritingDisorder"
 
-#IMG_PATH = "/home/ml3/Desktop/Thesis/Screenshot_15.png"
-#IMG_PATH = "/home/ml3/Desktop/Thesis/two_mimir.jpg"
+IMG_PATH = "/home/ml3/Desktop/Thesis/two_mimir.jpg"
 #IMG_PATH = "/home/ml3/Desktop/Thesis/IMG_20250809_113620.jpg"
-#IMG_PATH = "/home/ml3/Desktop/Thesis/.venv/Screenshot_12.png"
-IMG_PATH = "/home/ml3/Desktop/Thesis/0_Test1.jpg"
+#IMG_PATH = "/home/ml3/Desktop/Thesis/0_Test2.jpg"
+#IMG_PATH = "/home/ml3/Desktop/Thesis/.venv/Screenshot_17.png"
+#IMG_PATH = "/home/ml3/Desktop/Thesis/.venv/caps.jpg"
+#IMG_PATH = "/home/ml3/Desktop/Thesis/0_Test1.jpg"
 
 IMG_HEIGHT = 512
 IMG_WIDTH = 78
@@ -43,7 +45,6 @@ SIMILAR_PAIRS = {
     'Θ': 'θ', 'θ': 'Θ',
     'Ι': 'ι', 'ι': 'Ι',
     'Κ': 'κ', 'κ': 'Κ',
-    'Μ': 'μ', 'μ': 'Μ',
     'Ο': 'ο', 'ο': 'Ο',
     'Π': 'π', 'π': 'Π',
     'Ρ': 'ρ', 'ρ': 'Ρ',
@@ -52,6 +53,10 @@ SIMILAR_PAIRS = {
     'Ψ': 'ψ', 'ψ': 'Ψ'
 }
 
+'''
+'Μ': 'μ', 'μ': 'Μ',
+'''
+
 # ----------------------------------------------------------------------------#
 
 class GreekTextRecognizer:
@@ -59,6 +64,7 @@ class GreekTextRecognizer:
         # Loading the OCR model.
         self.device = device
         self.classes = class_mapping.values()
+        print(f"Number of classes: {len(self.classes)}")
         self.idx_to_class = {i: cls for i, cls in enumerate(self.classes)}
         self.model = self.load_model(len(self.classes))
 
@@ -119,7 +125,6 @@ class GreekTextRecognizer:
                     dictionary.add(word)
 
         print('Loaded the dictionary!')
-        print()
         return dictionary
 
     def mark_unknown(self, word, confidence=0):
@@ -550,17 +555,17 @@ class GreekTextRecognizer:
         for w_idx, word in enumerate(word_data):
             if not word.get('characters'):
                 continue
-            x_start = min(c[0] for c in word['characters'])  # left
-            x_end = max(c[2] for c in word['characters'])    # right
+            x_start = min(c[0] for c in word['characters'])  # Left.
+            x_end = max(c[2] for c in word['characters'])    # Right.
             word_positions.append((w_idx, x_start, x_end))
 
         if len(word_positions) < 2:
             return {'block_num': block_num, 'wd3_flagged': [], 'wd3_issue_count': 0}
 
-        # Sort by position
+        # Sorting by position.
         word_positions.sort(key=lambda x: x[1])
 
-        # Compute gaps
+        # Computing gaps.
         gaps = []
         for i in range(len(word_positions) - 1):
             gap = word_positions[i + 1][1] - word_positions[i][2]
@@ -570,7 +575,7 @@ class GreekTextRecognizer:
             return {'block_num': block_num, 'wd3_flagged': [], 'wd3_issue_count': 0}
 
         median_gap = np.median(gaps)
-        min_gap_thresh = 0.5 * median_gap
+        min_gap_thresh = 0.75 * median_gap
         max_gap_thresh = 2.0 * median_gap
 
         flagged_gaps = []
@@ -624,8 +629,9 @@ class GreekTextRecognizer:
         self.find_blocks(self.original_img)
         block_files = sorted([f for f in os.listdir(BLOCKS_FOLDER) if f.startswith('block_')],
                         key=lambda x: int(x.split('_')[1].split('.')[0]))
-
+        
         # Processing each block of text.
+        block_word_data = {}
         for block_idx, block_file in enumerate(block_files):
             block_path = os.path.join(BLOCKS_FOLDER, block_file)
             block_img = cv2.imread(block_path)
@@ -634,13 +640,9 @@ class GreekTextRecognizer:
             current_block_top = int(block_file.split('_')[1].split('.')[0]) * self.line_height
             upper_line_y = self.find_nearest_above_line(current_block_top)
 
-            # Getting the average block size for filtering.
-            #im_average = get_image_average(self.coloured_original)
-
             # Segmenting the block into words and characters.
             _, word_data = process_image_block(block_img)
-
-            self.wd1_baseline(block_idx + 1, word_data)
+            block_word_data[block_idx + 1] = word_data
 
             # Processing each word and character in the block.
             for word_idx, word in enumerate(word_data):
@@ -708,7 +710,64 @@ class GreekTextRecognizer:
                     
                     if word_chars:
                         recognized_text[block_num][word_num] = ''.join(word_chars)
-            
+
+        # Writing disorder analysis.
+        for block_num in block_word_data.keys():
+            if block_num in recognized_text:
+                # Preparing word data with predictions for writing disorder analysis.
+                word_data_with_predictions = []
+                for word_idx, word in enumerate(block_word_data[block_num]):
+                    if (word_idx + 1) in recognized_text[block_num]:
+                        word_with_pred = word.copy()
+                        # Getting predictions for this word.
+                        word_keys = [k for k in char_predictions.keys() 
+                                    if k[0] == block_num and k[1] == word_idx + 1]
+                        word_keys.sort(key=lambda x: x[2])
+                        predictions = []
+                        for key in word_keys:
+                            char, confidence = char_predictions[key]
+                            predictions.append((char, confidence))
+                        word_with_pred['predictions'] = predictions
+                        word_data_with_predictions.append(word_with_pred)
+                    else:
+                        word_data_with_predictions.append(word)
+                
+                # Calling all writing disorder functions.
+                print(f"\n=== Writing Disorder Analysis for Block {block_num} ===")
+                
+                # WD1: Baseline analysis.
+                wd1_result = self.wd1_baseline(block_num, word_data_with_predictions)
+                print(f"WD1 - Baseline Issues: {wd1_result['is_problematic']}")
+                if wd1_result['is_problematic']:
+                    print(f"   Problematic words: {wd1_result.get('problematic_words', 'N/A')}")
+                    print(f"   Max deviation: {wd1_result.get('max_deviation', 'N/A'):.1f}px")
+                print()
+
+                # WD2: Uppercase/Lowercase analysis.
+                wd2_result = self.wd2_uppercase_lowercase(block_num, word_data_with_predictions)
+                print(f"WD2 - Uppercase Issues: {wd2_result['wd2_issue_count']}")
+                if wd2_result['wd2_flagged']:
+                    for flagged_word in wd2_result['wd2_flagged']:
+                        print(f"   Word {flagged_word['word_index']}: '{flagged_word['word_text']}' "
+                            f"with extra capitals: {flagged_word['extra_capitals']}")
+                print()
+
+                # WD3: Spacing analysis.
+                wd3_result = self.wd3_spaces(block_num, word_data_with_predictions)
+                print(f"WD3 - Spacing Issues: {wd3_result['wd3_issue_count']}")
+                if wd3_result['wd3_flagged']:
+                    for gap in wd3_result['wd3_flagged']:
+                        print(f"   Gap between words {gap['between_words']}: {gap['gap']:.1f}px "
+                            f"(median: {gap['median_gap']:.1f}px)")
+                print()
+
+                # Summary
+                total_issues = (1 if wd1_result['is_problematic'] else 0) + \
+                            wd2_result['wd2_issue_count'] + \
+                            wd3_result['wd3_issue_count']
+                print(f"Total Writing Disorder Indicators: {total_issues}")
+
+            # Final text assembly.
             final_output = []
             for block_num in sorted(recognized_text.keys()):
                 block_words = []
