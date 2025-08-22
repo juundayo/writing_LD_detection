@@ -16,16 +16,17 @@ import time
 import random
 import cv2
 from PIL import Image
+import os 
 
 import data_loading as dl
 
 # ----------------------------------------------------------------------------#
 
-SAVE_PATH = "/home/ml3/Desktop/Thesis/Models/20250727.pth"
-LOAD_PATH = "/home/ml3/Desktop/Thesis/Models/20250727.pth"
+SAVE_PATH = "/home/ml3/Desktop/Thesis/Models/SD_OCR.pth"
+LOAD_PATH = "/home/ml3/Desktop/Thesis/Models/822_newdata.pth"
 DATA_DIR = '/home/ml3/Desktop/Thesis/.venv/Data/GreekLetters'
-EPOCHS = 100
-PATIENCE = 50
+EPOCHS = 3000
+PATIENCE = 300
 BATCH_SIZE = 16
 IMG_HEIGHT = 512
 IMG_WIDTH = 78
@@ -272,8 +273,8 @@ class SimilarCharacterLoss(nn.Module):
             if char1 in class_to_idx and char2 in class_to_idx:
                 idx1 = class_to_idx[char1]
                 idx2 = class_to_idx[char2]
-                self.similarity_matrix[idx1, idx2] = 0.5
-                self.similarity_matrix[idx2, idx1] = 0.5
+                self.similarity_matrix[idx1, idx2] = 0.7
+                self.similarity_matrix[idx2, idx1] = 0.7
 
     def forward(self, inputs, targets):
         # Calculating base cross-entropy loss.
@@ -295,7 +296,7 @@ class SimilarCharacterLoss(nn.Module):
                                    reduction='batchmean')
         
         # Combining losses.
-        total_loss = base_loss + 0.3 * similarity_loss
+        total_loss = base_loss + 0.2 * similarity_loss
         
         return total_loss
         
@@ -550,6 +551,7 @@ def plot_confusion_matrix(model, test_loader, device, class_names):
     plt.title('Confusion Matrix')
     plt.tight_layout()
     plt.show()
+    plt.savefig("confusion_matrix.png", bbox_inches='tight', pad_inches=0)
 
 # ----------------------------------------------------------------------------#
 
@@ -557,33 +559,44 @@ def imshow(img_tensor):
     """Converts normalized image tensor to numpy image and denormalizes."""
     img = img_tensor.cpu().numpy().squeeze()
     img = img * 0.5 + 0.5
+    img = np.clip(img, 0, 1)
     return img
 
-def plot_predictions(model, test_loader, class_names, device, num_figures=10, img_per_fig=20):
+def plot_predictions(model, test_loader, class_names, device, num_figures=10, img_per_fig=20, save_dir="output_debug_images"):
     model.eval()
+    os.makedirs(save_dir, exist_ok=True)
+    
     total_images = num_figures * img_per_fig
     shown = 0
+    fig = None
+    axes = None
 
     with torch.no_grad():
         for images, labels in test_loader:
             images, labels = images.to(device), labels.to(device)
-
             outputs = model(images)
             _, preds = torch.max(outputs, 1)
 
             for i in range(images.size(0)):
                 if shown >= total_images:
+                    if fig is not None:
+                        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+                        fig.savefig(os.path.join(save_dir, f"predictions_batch_{fig_idx+1}.png"))
+                        plt.close(fig)
                     return
-                
+
                 fig_idx = shown // img_per_fig
                 subplot_idx = shown % img_per_fig
 
                 if subplot_idx == 0:
+                    if fig is not None:
+                        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+                        fig.savefig(os.path.join(save_dir, f"predictions_batch_{fig_idx}.png"))
+                        plt.close(fig)
                     fig, axes = plt.subplots(4, 5, figsize=(12, 10))
                     axes = axes.flatten()
-                    fig.suptitle(f'Predictions: Batch {fig_idx + 1}',
-                                 fontsize = 16)
-                
+                    fig.suptitle(f'Predictions: Batch {fig_idx + 1}', fontsize=16)
+
                 ax = axes[subplot_idx]
                 ax.imshow(imshow(images[i]), cmap='gray')
                 ax.set_title(f"True: {class_names[labels[i]]}\nPred: {class_names[preds[i]]}", fontsize=10)
@@ -591,9 +604,10 @@ def plot_predictions(model, test_loader, class_names, device, num_figures=10, im
 
                 shown += 1
 
-                if shown % img_per_fig == 0:
-                    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-                    plt.show()
+        if fig is not None:
+            fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+            fig.savefig(os.path.join(save_dir, f"predictions_batch_{fig_idx+1}.png"))
+            plt.close(fig)
 
 # ----------------------------------------------------------------------------#
 
@@ -633,5 +647,3 @@ if __name__ == "__main__":
     # Displaying a confusion matrix and image predictions.
     plot_confusion_matrix(model, test_loader, device, full_dataset.classes)
     plot_predictions(model, test_loader, full_dataset.classes, device)
-
-# ----------------------------------------------------------------------------#
