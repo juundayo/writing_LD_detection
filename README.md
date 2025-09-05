@@ -1,19 +1,26 @@
-### Description
-An AI OCR model trained on greek letter recognition using PyTorch.
-The final code will take written text as an input and then recognize if
-the person who wrote it has potential writing and/or spelling disorders.
+### Greek Language Writing and Spelling Detection 
+An application that takes handwritten text as input, and produces a writing and spelling disorder classification based on image processing tools, machine learning and a custom-made OCR model. Developed as part of my graduation thesis.
 
+<img width="905" height="497" alt="image" src="https://github.com/user-attachments/assets/994a2480-762b-4b25-8f06-0fec7de9052c" />
 
-------------
+## Handwritten Greek text OCR model 
+A Res-Net-style architecture, with some upgrades tailored for handwritten single-character recognition that include Squeeze-and-Excitation blocks (SEBlocks), Multi-Head Attention layers, and the addition of a final residual block after the attention-enhanced features are processed, followed by global average pooling and a fully connected layer to output the class logits. 
 
-### Handwritten Greek text OCR model: 
-The OCR model is trained on two custom datasets.
-For the first one, we asked ~100 volunteers to fill out a
-form of single characters that contained every letter of
-the Greek alphabet, as well as every tonos and dialytic 
-variation.
-For the second one, the national Centre for Scientific Research
-Demokritos offered us the dataset used for the ICDAR2012 Writer
-challenge. It includes 2 passages (~35 words each) that 100 
-different writers wrote, and we used it to boost our initial dataset.
+<img width="961" height="446" alt="image" src="https://github.com/user-attachments/assets/fe7b540f-d582-4011-bc29-cf517cf06f3e" />
 
+## Dataset
+Most of the dataset was custom-made, and it consisted of 2 parts: 
+- 100 volunteers filled out a form with every letter of the Greek language in uppercase and lowercase
+- Single characters were extracted from the ICDAR2012 Writer challenge dataset, which was provided by the National Centre for Scientific Research Demokritos
+
+## Spelling Disorder
+Leverages a Trie for dictionary spell checks and a word suggestion system based on Levenshtein distances. 
+
+## Writing Disorder
+Utilizes a 3-step algorithm to detect key patterns commonly found in passages written by individuals diagnosed with writing disorder.
+- Word alignment irregularities
+- Inconsistent capital letter usage
+- Irregularity in spaces between words
+
+<img width="776" height="189" alt="image" src="https://github.com/user-attachments/assets/9422df97-0fea-4f0e-aa5b-1dafccf5d5c5" />
+<img width="772" height="160" alt="image" src="https://github.com/user-attachments/assets/57bf0eb9-efc8-454a-aa38-e8162a0208f8" />
