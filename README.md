@@ -1,4 +1,4 @@
-### Greek Language Writing and Spelling Disorder Detection 
+## Greek Language Writing and Spelling Disorder Detection 
 An application that takes handwritten text as input, and produces a writing and spelling disorder classification based on image processing tools, machine learning and a custom-made OCR model. Developed as part of my graduation thesis.
 
 <img width="905" height="497" alt="image" src="https://github.com/user-attachments/assets/994a2480-762b-4b25-8f06-0fec7de9052c" />
