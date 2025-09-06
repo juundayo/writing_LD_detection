@@ -1,7 +1,7 @@
 ## Greek Language Writing and Spelling Disorder Detection 
 An application that takes handwritten text as input, and produces a writing and spelling disorder classification based on image processing tools, machine learning and a custom-made OCR model. Developed as part of my graduation thesis.
 
-<img width="905" height="497" alt="image" src="https://github.com/user-attachments/assets/994a2480-762b-4b25-8f06-0fec7de9052c" />
+<img width="1920" height="1080" alt="pipeline" src="https://github.com/user-attachments/assets/28e3b63d-f9d6-4191-985e-0c0f1011a22d" />
 
 ## Handwritten Greek text OCR model 
 A Res-Net-style architecture, with some upgrades tailored for handwritten single-character recognition that include Squeeze-and-Excitation blocks (SEBlocks), Multi-Head Attention layers, and the addition of a final residual block after the attention-enhanced features are processed, followed by global average pooling and a fully connected layer to output the class logits. 
