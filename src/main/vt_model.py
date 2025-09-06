@@ -6,7 +6,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torchvision import transforms
 from sklearn.metrics import confusion_matrix
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from collections import Counter
 import matplotlib.pyplot as plt
 import numpy as np
@@ -22,15 +22,15 @@ import data_loading as dl
 
 # ----------------------------------------------------------------------------#
 
-SAVE_PATH = "/home/ml3/Desktop/Thesis/Models/SD_OCR.pth"
-LOAD_PATH = "/home/ml3/Desktop/Thesis/Models/822_newdata.pth"
+SAVE_PATH = "/home/ml3/Desktop/Thesis/Models/SD_OCR6.pth"
+LOAD_PATH = "/home/ml3/Desktop/Thesis/Models/SD_OCR6.pth"
 DATA_DIR = '/home/ml3/Desktop/Thesis/.venv/Data/GreekLetters'
-EPOCHS = 3000
-PATIENCE = 300
+EPOCHS = 2000
+PATIENCE = 150
 BATCH_SIZE = 16
 IMG_HEIGHT = 512
 IMG_WIDTH = 78
-TRAIN = True
+TRAIN = False
 
 SIMILAR_PAIRS = {
     'Ε': 'ε', 'ε': 'Ε',
@@ -147,11 +147,12 @@ class OCR(nn.Module):
         # Self-attention on the feature map.
         self.attention = nn.MultiheadAttention(embed_dim=256, num_heads=8)
 
-        # Final convolytion.
+        # Final convolution.
         self.layer4 = self._make_layer(256,512, blocks=2, stride=2, use_se=True)
 
         # Classification.
         self.global_pool = nn.AdaptiveAvgPool2d((1,1))
+        self.dropout = nn.Dropout(p=0.4)
         self.fc = nn.Linear(512, num_classes)
 
     def _make_layer(self, in_planes, planes, blocks, stride, use_se):
@@ -179,6 +180,7 @@ class OCR(nn.Module):
         x = x + attn_out                        # Residual connection.
         x = self.layer4(x)                      # -> [B,512, 3, 5]
         x = self.global_pool(x).view(batch, -1) # -> [B,512]
+        x = self.dropout(x)
         x = self.fc(x)                          # -> [B,num_classes]
         return x
     
@@ -186,9 +188,9 @@ class OCR(nn.Module):
 
 '''
 Using more augmentations for better training and test performance.
-We have already applied random rotations and random contrast to 2.500
+We have already applied random rotations and random contrast to 1.500
 images, and now we take these images and add more small augmentations 
-with a 50% probability. Specifically, we use:
+with a 55% probability. Specifically, we use:
     → Random affine.
     → Random perspective.
     → Gaussian blur.
@@ -231,9 +233,9 @@ class DynamicAugmentations:
         ]
 
     def __call__(self, img_tensor):
-        # 50% chance per augmentation.
+        # 55% chance per augmentation.
         for name, aug in self.augmentations:
-            if random.random() < 0.5:
+            if random.random() < 0.55:
                 if name in ["RandomAffine", "RandomPerspective"]:
                     padded = replicate_pad(img_tensor, pad=20)
                     augmented = aug(padded)
@@ -321,7 +323,7 @@ def similar_character_accuracy(outputs, labels, classes):
     
     total = labels.size(0)
     strict_acc = 100 * correct / total
-    lenient_acc = 100 * (correct + 0.5 * similar_correct) / total
+    lenient_acc = 100 * (correct + 0.8 * similar_correct) / total
     
     return strict_acc, lenient_acc
 
@@ -352,19 +354,49 @@ def train_model():
     # Class weights for imbalanced data.
     labels = [label for _, label in train_dataset]
     class_counts = Counter(labels)
-    weights = 1. / torch.tensor([class_counts[i] for i in range(len(full_dataset.classes))], 
-                                dtype=torch.float)
+
+    # Class weights = inverse frequency.
+    class_weights = 1. / torch.tensor(
+        [class_counts[i] for i in range(len(full_dataset.classes))], 
+        dtype=torch.float
+    )
+    # per-sample weights
+    sample_weights = torch.tensor([class_weights[label] for label in labels],
+                                  dtype=torch.float)
+
+    # sampler
+    sampler = WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(sample_weights),
+        replacement=True
+    )
+
+    # DataLoaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        sampler=sampler,     
+        num_workers=4,
+        pin_memory=True
+    )
+
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True
+    )
 
     # Custom loss function with similar character handling.
     criterion = SimilarCharacterLoss(
         num_classes=len(full_dataset.classes),
         class_to_idx=full_dataset.class_to_idx,
-        weight=weights.to(device),
-        label_smoothing=0.1
+        label_smoothing=0.3
     )
     
     # Optimizer and scheduler.
-    optimizer = optim.AdamW(model.parameters(), lr=0.0001, weight_decay=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=0.0001, weight_decay=1e-2)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 'max', patience=3, min_lr=1e-4, factor=0.2
     )
@@ -435,7 +467,7 @@ def train_model():
         # Calculating epoch metrics.
         train_loss = epoch_loss / epoch_total
         train_strict_acc = 100 * epoch_correct / epoch_total
-        train_lenient_acc = 100 * (epoch_correct + 0.5 * epoch_similar) / epoch_total
+        train_lenient_acc = 100 * (epoch_correct + 0.75 * epoch_similar) / epoch_total
         
         # Test evaluation
         model.eval()
@@ -500,10 +532,10 @@ def train_model():
                 print(f"\nEarly stopping at epoch {epoch+1}")
                 break
     
-    # Final cleanup
+    # Final cleanup.
     pbar.close()
     
-    # Plot training curves
+    # Plotting training curves.
     plt.figure(figsize=(12, 5))
     plt.subplot(1, 2, 1)
     plt.plot(train_loss_history, label='Training Loss')
@@ -611,6 +643,101 @@ def plot_predictions(model, test_loader, class_names, device, num_figures=10, im
 
 # ----------------------------------------------------------------------------#
 
+def print_model_accuracy(model, test_loader, device, class_names):
+    """
+    Calculating and printing the final 
+    model accuracy with detailed metrics.
+    """
+    model.eval()
+    all_preds = []
+    all_labels = []
+    correct = 0
+    total = 0
+    similar_correct = 0
+    
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+            
+            # Check for similar character matches
+            incorrect_mask = (predicted != labels)
+            incorrect_preds = predicted[incorrect_mask]
+            incorrect_labels = labels[incorrect_mask]
+            
+            for pred, true in zip(incorrect_preds, incorrect_labels):
+                pred_char = class_names[pred.item()]
+                true_char = class_names[true.item()]
+                if pred_char in SIMILAR_PAIRS and SIMILAR_PAIRS[pred_char] == true_char:
+                    similar_correct += 1
+    
+    # Calculating accuracies.
+    strict_acc = 100 * correct / total
+    lenient_acc = 100 * (correct + 1 * similar_correct) / total
+    
+    # Printing results.
+    print("\n" + "="*60)
+    print("MODEL ACCURACY REPORT")
+    print("="*60)
+    print(f"Total test samples: {total}")
+    print(f"Correct predictions: {correct}")
+    print(f"Similar character matches: {similar_correct}")
+    print(f"Strict Accuracy: {strict_acc:.2f}%")
+    print(f"Lenient Accuracy: {lenient_acc:.2f}%")
+    print("="*60)
+    
+    # Per-class accuracy
+    cm = confusion_matrix(all_labels, all_preds)
+    class_accuracy = 100 * cm.diagonal() / cm.sum(axis=1)
+    
+    print("\nPer-class accuracy:")
+    for i, cls in enumerate(class_names):
+        print(f"{cls}: {class_accuracy[i]:.2f}%")
+    
+    return strict_acc, lenient_acc
+
+# ----------------------------------------------------------------------------#
+
+def plot_detailed_confusion_matrix(model, test_loader, device, class_names):
+    """
+    Updated confusion matrix with percentages and counts.
+    """
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images = images.to(device)
+            outputs = model(images)
+            _, preds = torch.max(outputs, 1)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.numpy())
+
+    cm = confusion_matrix(all_labels, all_preds)
+    
+    # Calculating percentages.
+    cm_percent = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis] * 100
+    
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(cm_percent, annot=cm, fmt='d', cmap='Blues', 
+                xticklabels=class_names, yticklabels=class_names,
+                cbar_kws={'label': 'Accuracy Percentage'})
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    plt.title('Confusion Matrix (Percentage with Count)')
+    plt.tight_layout()
+    plt.show()
+    plt.savefig("detailed_confusion_matrix.png", bbox_inches='tight', pad_inches=0)
+
+# ----------------------------------------------------------------------------#
+
 if __name__ == "__main__":
 
     ''' Loading data through the data_loading.py file.'''
@@ -644,6 +771,9 @@ if __name__ == "__main__":
         model.eval()
         print("Loaded the model successfully.")
 
-    # Displaying a confusion matrix and image predictions.
     plot_confusion_matrix(model, test_loader, device, full_dataset.classes)
     plot_predictions(model, test_loader, full_dataset.classes, device)
+
+    strict_acc, lenient_acc = print_model_accuracy(model, test_loader, device, full_dataset.classes)
+    
+    plot_detailed_confusion_matrix(model, test_loader, device, full_dataset.classes)
